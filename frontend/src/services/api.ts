@@ -94,7 +94,8 @@ export const resetConsumerGroupOffsets = (
   })
 
 // ---- Kafka Cluster Config ----
-export const getClusterConfig = (clusterId: number) => api.get(`/kafka/clusters/${clusterId}/config`)
+export const getClusterConfig = (clusterId: number, brokerId: number) =>
+  api.get(`/kafka/clusters/${clusterId}/config`, { params: { broker_id: brokerId } })
 export const updateClusterConfig = (clusterId: number, name: string, value: string | null, brokerId = -1) =>
   api.put(`/kafka/clusters/${clusterId}/config`, { name, value, broker_id: brokerId })
 

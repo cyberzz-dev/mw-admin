@@ -849,14 +849,16 @@ func ResetConsumerGroupOffsets(cluster *models.KafkaCluster, groupID, topic, res
 
 // BrokerConfig represents a single Kafka configuration entry.
 type BrokerConfig struct {
-	Name      string `json:"name"`
-	Value     string `json:"value"`
-	IsDefault bool   `json:"is_default"`
-	ReadOnly  bool   `json:"read_only"`
-	Sensitive bool   `json:"sensitive"`
+	Name        string `json:"name"`
+	Value       string `json:"value"`
+	IsDefault   bool   `json:"is_default"`
+	ReadOnly    bool   `json:"read_only"`
+	Sensitive   bool   `json:"sensitive"`
+	Source      string `json:"source"`       // "broker" | "cluster" | "static" | "default" | "unknown"
+	ClusterWide bool   `json:"cluster_wide"` // true = supports cluster-wide (default-broker) application
 }
 
-func GetClusterConfigs(cluster *models.KafkaCluster) ([]BrokerConfig, error) {
+func GetClusterConfigs(cluster *models.KafkaCluster, brokerID int32) ([]BrokerConfig, error) {
 	cfg, err := newSaramaConfig(cluster)
 	if err != nil {
 		return nil, err
@@ -878,10 +880,13 @@ func GetClusterConfigs(cluster *models.KafkaCluster) ([]BrokerConfig, error) {
 	}
 	defer admin.Close()
 
-	brokerID := brokers[0].ID()
+	targetID := brokerID
+	if targetID < 0 {
+		targetID = brokers[0].ID()
+	}
 	entries, err := admin.DescribeConfig(sarama.ConfigResource{
 		Type:        sarama.BrokerResource,
-		Name:        fmt.Sprintf("%d", brokerID),
+		Name:        fmt.Sprintf("%d", targetID),
 		ConfigNames: nil,
 	})
 	if err != nil {
@@ -891,14 +896,48 @@ func GetClusterConfigs(cluster *models.KafkaCluster) ([]BrokerConfig, error) {
 	result := make([]BrokerConfig, 0, len(entries))
 	for _, e := range entries {
 		result = append(result, BrokerConfig{
-			Name:      e.Name,
-			Value:     e.Value,
-			IsDefault: e.Default,
-			ReadOnly:  e.ReadOnly,
-			Sensitive: e.Sensitive,
+			Name:        e.Name,
+			Value:       e.Value,
+			IsDefault:   e.Default,
+			ReadOnly:    e.ReadOnly,
+			Sensitive:   e.Sensitive,
+			Source:      brokerConfigSource(e.Source),
+			ClusterWide: configSupportsClusterWide(e),
 		})
 	}
 	return result, nil
+}
+
+func brokerConfigSource(s sarama.ConfigSource) string {
+	switch s {
+	case sarama.SourceDynamicBroker:
+		return "broker"
+	case sarama.SourceDynamicDefaultBroker:
+		return "cluster"
+	case sarama.SourceStaticBroker:
+		return "static"
+	case sarama.SourceDefault:
+		return "default"
+	default:
+		return "unknown"
+	}
+}
+
+// configSupportsClusterWide reports whether a config entry can be set at the
+// cluster-wide (default-broker) level. Kafka always includes a
+// SourceDynamicDefaultBroker synonym for such configs, even when no cluster-wide
+// value is currently set. If synonyms are absent (older Kafka / older protocol
+// version), we default to true so the UI doesn't block the user.
+func configSupportsClusterWide(e sarama.ConfigEntry) bool {
+	if len(e.Synonyms) == 0 {
+		return true // older protocol: can't determine, allow cluster-wide
+	}
+	for _, s := range e.Synonyms {
+		if s.Source == sarama.SourceDynamicDefaultBroker {
+			return true
+		}
+	}
+	return false
 }
 
 // UpdateClusterConfig applies a dynamic config change to the specified broker.
@@ -931,13 +970,8 @@ func UpdateClusterConfig(cluster *models.KafkaCluster, configName string, config
 			return admin.IncrementalAlterConfig(sarama.BrokerResource,
 				fmt.Sprintf("%d", brokerID), incrEntries, false)
 		}
-		for _, broker := range client.Brokers() {
-			if err := admin.IncrementalAlterConfig(sarama.BrokerResource,
-				fmt.Sprintf("%d", broker.ID()), incrEntries, false); err != nil {
-				return fmt.Errorf("reset broker %d config failed: %w", broker.ID(), err)
-			}
-		}
-		return nil
+		// cluster-wide: reset on the default-broker entity (inherited by all brokers)
+		return admin.IncrementalAlterConfig(sarama.BrokerResource, "", incrEntries, false)
 	}
 	entries := map[string]*string{configName: configValue}
 	if brokerID >= 0 {
@@ -945,14 +979,8 @@ func UpdateClusterConfig(cluster *models.KafkaCluster, configName string, config
 		return admin.AlterConfig(sarama.BrokerResource,
 			fmt.Sprintf("%d", brokerID), entries, false)
 	}
-	// Apply to all brokers
-	for _, broker := range client.Brokers() {
-		if err := admin.AlterConfig(sarama.BrokerResource,
-			fmt.Sprintf("%d", broker.ID()), entries, false); err != nil {
-			return fmt.Errorf("update broker %d config failed: %w", broker.ID(), err)
-		}
-	}
-	return nil
+	// cluster-wide: write to the default-broker entity (inherited by all brokers)
+	return admin.AlterConfig(sarama.BrokerResource, "", entries, false)
 }
 
 // GetTopicConfig returns all configuration entries for the given topic.

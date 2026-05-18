@@ -389,7 +389,13 @@ func KafkaGetClusterConfig(c *gin.Context) {
 	if !ok {
 		return
 	}
-	configs, err := services.GetClusterConfigs(cluster)
+	brokerID := int32(-1)
+	if v := c.Query("broker_id"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			brokerID = int32(n)
+		}
+	}
+	configs, err := services.GetClusterConfigs(cluster, brokerID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

@@ -1021,7 +1021,7 @@ func configSupportsClusterWide(e sarama.ConfigEntry) bool {
 }
 
 // UpdateClusterConfig applies a dynamic config change to the specified broker.
-// Pass brokerID=-1 to apply to every broker in the cluster.
+// Pass brokerID=-1 to apply cluster-wide (default-broker entity).
 // Pass configValue=nil to reset the key to its default.
 func UpdateClusterConfig(cluster *models.KafkaCluster, configName string, configValue *string, brokerID int32) error {
 	cfg, err := newSaramaConfig(cluster)
@@ -1040,27 +1040,44 @@ func UpdateClusterConfig(cluster *models.KafkaCluster, configName string, config
 	}
 	defer admin.Close()
 
-	if configValue == nil {
-		// Use IncrementalAlterConfigs DELETE to properly reset to broker default;
-		// AlterConfig with null is rejected for INT/LONG typed configs (e.g. segment.bytes).
-		incrEntries := map[string]sarama.IncrementalAlterConfigsEntry{
-			configName: {Operation: sarama.IncrementalAlterConfigsOperationDelete},
-		}
-		if brokerID >= 0 {
-			return admin.IncrementalAlterConfig(sarama.BrokerResource,
-				fmt.Sprintf("%d", brokerID), incrEntries, false)
-		}
-		// cluster-wide: reset on the default-broker entity (inherited by all brokers)
-		return admin.IncrementalAlterConfig(sarama.BrokerResource, "", incrEntries, false)
+	deleteEntry := map[string]sarama.IncrementalAlterConfigsEntry{
+		configName: {Operation: sarama.IncrementalAlterConfigsOperationDelete},
 	}
-	entries := map[string]*string{configName: configValue}
+
 	if brokerID >= 0 {
-		// Apply to a single broker
-		return admin.AlterConfig(sarama.BrokerResource,
-			fmt.Sprintf("%d", brokerID), entries, false)
+		// ── Per-broker path ──────────────────────────────────────────────────
+		if configValue == nil {
+			return admin.IncrementalAlterConfig(sarama.BrokerResource,
+				fmt.Sprintf("%d", brokerID), deleteEntry, false)
+		}
+		return admin.IncrementalAlterConfig(sarama.BrokerResource,
+			fmt.Sprintf("%d", brokerID),
+			map[string]sarama.IncrementalAlterConfigsEntry{
+				configName: {Operation: sarama.IncrementalAlterConfigsOperationSet, Value: configValue},
+			}, false)
 	}
-	// cluster-wide: write to the default-broker entity (inherited by all brokers)
-	return admin.AlterConfig(sarama.BrokerResource, "", entries, false)
+
+	// ── Cluster-wide path ─────────────────────────────────────────────────
+	// Per-broker overrides (SourceDynamicBroker) take precedence over the
+	// cluster-wide default entity (SourceDynamicDefaultBroker). If any broker
+	// has a stale per-broker override, the cluster-wide change would not take
+	// effect on that broker. Clear per-broker overrides on every broker first
+	// so they all fall through to the cluster-wide value.
+	for _, b := range client.Brokers() {
+		_ = admin.IncrementalAlterConfig(sarama.BrokerResource,
+			fmt.Sprintf("%d", b.ID()), deleteEntry, false)
+	}
+
+	if configValue == nil {
+		// Reset: also remove the cluster-wide default so brokers revert to static/default.
+		return admin.IncrementalAlterConfig(sarama.BrokerResource, "", deleteEntry, false)
+	}
+	// Use IncrementalAlterConfig SET (not legacy AlterConfig) to avoid implicitly
+	// removing other cluster-wide keys, which Kafka rejects when ELR is enabled.
+	return admin.IncrementalAlterConfig(sarama.BrokerResource, "",
+		map[string]sarama.IncrementalAlterConfigsEntry{
+			configName: {Operation: sarama.IncrementalAlterConfigsOperationSet, Value: configValue},
+		}, false)
 }
 
 // GetTopicConfig returns all configuration entries for the given topic.

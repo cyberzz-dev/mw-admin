@@ -1,10 +1,10 @@
-import React, { useState, useEffect, useRef, useLayoutEffect } from 'react'
-import { Table, message, Space, Button, Input, Modal, Form, Tag, Select, Radio } from 'antd'
-import { EditOutlined, ReloadOutlined, RollbackOutlined } from '@ant-design/icons'
+import React, { useState, useEffect, useRef, useLayoutEffect, useMemo } from 'react'
+import { Table, message, Space, Button, Input, Modal, Form, Tag, Select, Radio, Tabs, Switch, Badge, Tooltip } from 'antd'
+import { EditOutlined, ReloadOutlined, RollbackOutlined, CheckCircleOutlined, WarningOutlined } from '@ant-design/icons'
 import ClusterSelector from '../../components/ClusterSelector'
 import { useResizableColumns, tableComponents } from '../../components/ResizableColumns'
 import { useAuth } from '../../contexts/AuthContext'
-import { listKafkaClusters, getClusterConfig, updateClusterConfig, listKafkaBrokers } from '../../services/api'
+import { listKafkaClusters, getClusterConfig, updateClusterConfig, listKafkaBrokers, getAllBrokersConfig } from '../../services/api'
 
 export default function KafkaClusterConfig() {
   const [clusterId, setClusterId] = useState<number | undefined>()
@@ -19,6 +19,13 @@ export default function KafkaClusterConfig() {
   const [brokers, setBrokers] = useState<any[]>([])
   const [selectedBrokerId, setSelectedBrokerId] = useState<number | undefined>()
   const { hasPermission, isAdmin } = useAuth()
+
+  // Comparison tab state
+  const [activeTab, setActiveTab] = useState('single')
+  const [compareSnapshots, setCompareSnapshots] = useState<any[]>([])
+  const [compareLoading, setCompareLoading] = useState(false)
+  const [diffOnly, setDiffOnly] = useState(false)
+  const [compareSearch, setCompareSearch] = useState('')
 
   const canEdit = isAdmin || hasPermission('kafka_cluster_edit')
 
@@ -36,6 +43,18 @@ export default function KafkaClusterConfig() {
     setLoading(false)
   }
 
+  const fetchCompareData = async () => {
+    if (!clusterId) return
+    setCompareLoading(true)
+    try {
+      const res = await getAllBrokersConfig(clusterId)
+      setCompareSnapshots(res.data || [])
+    } catch (e: any) {
+      message.error(e.response?.data?.error || 'Failed to fetch comparison data')
+    }
+    setCompareLoading(false)
+  }
+
   const applySearch = (data: any[], q: string) => {
     setFiltered(!q ? data : data.filter((c: any) => c.name.includes(q) || (c.value || '').includes(q)))
   }
@@ -45,6 +64,7 @@ export default function KafkaClusterConfig() {
     setConfigs([])
     setFiltered([])
     setBrokers([])
+    setCompareSnapshots([])
     if (clusterId) {
       listKafkaBrokers(clusterId).then(res => setBrokers(res.data || [])).catch(() => {})
     }
@@ -55,6 +75,12 @@ export default function KafkaClusterConfig() {
       fetchConfig()
     }
   }, [selectedBrokerId])
+
+  useEffect(() => {
+    if (activeTab === 'compare' && clusterId) {
+      fetchCompareData()
+    }
+  }, [activeTab, clusterId])
 
   const handleSearch = (val: string) => {
     setSearch(val)
@@ -92,6 +118,81 @@ export default function KafkaClusterConfig() {
     static:  { label: 'Static',          color: 'default', scope: 'specific' },
     default: { label: 'Default',         color: 'default', scope: 'specific' },
   }
+
+  // ---- Comparison tab derived data ----
+  const compareRows = useMemo(() => {
+    if (compareSnapshots.length === 0) return []
+    const paramMap = new Map<string, { values: Record<string, string>; clusterWide: boolean; readOnly: boolean; sensitive: boolean }>()
+    for (const snap of compareSnapshots) {
+      for (const cfg of snap.configs as any[]) {
+        if (!paramMap.has(cfg.name)) {
+          paramMap.set(cfg.name, { values: {}, clusterWide: cfg.cluster_wide, readOnly: cfg.read_only, sensitive: cfg.sensitive })
+        }
+        paramMap.get(cfg.name)!.values[String(snap.broker_id)] = cfg.value
+      }
+    }
+    const rows: any[] = []
+    paramMap.forEach((meta, name) => {
+      const vals = Object.values(meta.values)
+      const consistent = vals.length > 0 && vals.every(v => v === vals[0])
+      const freq: Record<string, number> = {}
+      for (const v of vals) freq[v] = (freq[v] || 0) + 1
+      const majorityVal = Object.entries(freq).sort((a, b) => b[1] - a[1])[0]?.[0] ?? ''
+      rows.push({ key: name, name, ...meta, consistent, majorityVal })
+    })
+    return rows.sort((a, b) => a.name.localeCompare(b.name))
+  }, [compareSnapshots])
+
+  const diffCount = useMemo(() => compareRows.filter(r => !r.consistent).length, [compareRows])
+
+  const filteredCompareRows = useMemo(() => {
+    let rows = compareRows
+    if (diffOnly) rows = rows.filter(r => !r.consistent)
+    if (compareSearch) rows = rows.filter(r => r.name.includes(compareSearch))
+    return rows
+  }, [compareRows, diffOnly, compareSearch])
+
+  const compareColumns = useMemo(() => {
+    const cols: any[] = [
+      {
+        title: 'Parameter', dataIndex: 'name', width: 300, fixed: 'left' as const,
+        defaultSortOrder: 'ascend' as const,
+        sorter: (a: any, b: any) => a.name.localeCompare(b.name),
+      },
+      {
+        title: 'Status', width: 120, fixed: 'left' as const,
+        render: (_: any, r: any) => r.consistent
+          ? <Tag color="success" icon={<CheckCircleOutlined />}>Consistent</Tag>
+          : <Tag color="warning" icon={<WarningOutlined />}>Differs</Tag>,
+      },
+    ]
+    for (const snap of compareSnapshots) {
+      const bid = String(snap.broker_id)
+      cols.push({
+        title: (
+          <div>
+            <div>Broker {snap.broker_id}</div>
+            <div style={{ fontSize: 11, fontWeight: 'normal', color: '#888' }}>{snap.host}</div>
+          </div>
+        ),
+        width: 240,
+        render: (_: any, r: any) => {
+          if (r.sensitive) return <span style={{ color: '#bbb' }}>******</span>
+          const v: string = r.values?.[bid]
+          const isDiff = !r.consistent && v !== r.majorityVal
+          return (
+            <Tooltip title={isDiff ? `Majority: ${r.majorityVal}` : undefined}>
+              <span style={isDiff ? { color: '#d46b08', fontWeight: 600 } : {}}>{v ?? <span style={{ color: '#ccc' }}>—</span>}</span>
+            </Tooltip>
+          )
+        },
+        onCell: (r: any) => ({
+          style: (!r.consistent && r.values?.[bid] !== r.majorityVal) ? { backgroundColor: '#fff7e6' } : {},
+        }),
+      })
+    }
+    return cols
+  }, [compareSnapshots])
 
   const baseColumns = [
     {
@@ -140,12 +241,12 @@ export default function KafkaClusterConfig() {
     const compute = () => {
       if (!tableRef.current) return
       const top = tableRef.current.getBoundingClientRect().top
-      setTableScrollY(Math.max(200, window.innerHeight - top - 88))
+      if (top > 0) setTableScrollY(Math.max(200, window.innerHeight - top - 88))
     }
     compute()
     window.addEventListener('resize', compute)
     return () => window.removeEventListener('resize', compute)
-  }, [clusterId])
+  }, [clusterId, activeTab])
 
   return (
     <div>
@@ -158,45 +259,109 @@ export default function KafkaClusterConfig() {
             fetchClusters={listKafkaClusters}
             placeholder="Select Kafka cluster"
           />
-          <Select
-            style={{ width: 240 }}
-            placeholder="Select broker node"
-            value={selectedBrokerId}
-            onChange={setSelectedBrokerId}
-            disabled={!clusterId || brokers.length === 0}
-            allowClear
-          >
-            {brokers.map((b: any) => (
-              <Select.Option key={b.id} value={b.id}>
-                Broker {b.id} — {b.host}:{b.port}
-              </Select.Option>
-            ))}
-          </Select>
-        </Space>
-        <Space>
-          <Input.Search
-            placeholder="Search parameter name or value"
-            value={search}
-            onChange={e => handleSearch(e.target.value)}
-            style={{ width: 280 }}
-            allowClear
-          />
-          <Button icon={<ReloadOutlined />} onClick={fetchConfig} disabled={!clusterId || selectedBrokerId === undefined}>Refresh</Button>
         </Space>
       </div>
-      <div ref={tableRef}>
-      <Table
-        rowKey="name"
-        components={tableComponents}
-        columns={columns}
-        dataSource={filtered}
-        loading={loading}
-        locale={{ emptyText: selectedBrokerId === undefined ? (clusterId ? 'Please select a broker node above' : 'Please select a cluster first') : 'No config data' }}
-        size="small"
-        scroll={{ x: 'max-content', y: tableScrollY }}
-        pagination={{ defaultPageSize: 20, pageSizeOptions: ['20', '50', '100'], showSizeChanger: true, showTotal: (total) => `${total} items total`, size: 'small' }}
+
+      <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
+        style={{ padding: '0 24px' }}
+        items={[
+          {
+            key: 'single',
+            label: 'Single Broker',
+            children: (
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <Space>
+                    <Select
+                      style={{ width: 240 }}
+                      placeholder="Select broker node"
+                      value={selectedBrokerId}
+                      onChange={setSelectedBrokerId}
+                      disabled={!clusterId || brokers.length === 0}
+                      allowClear
+                    >
+                      {brokers.map((b: any) => (
+                        <Select.Option key={b.id} value={b.id}>
+                          Broker {b.id} — {b.host}:{b.port}
+                        </Select.Option>
+                      ))}
+                    </Select>
+                  </Space>
+                  <Space>
+                    <Input.Search
+                      placeholder="Search parameter name or value"
+                      value={search}
+                      onChange={e => handleSearch(e.target.value)}
+                      style={{ width: 280 }}
+                      allowClear
+                    />
+                    <Button icon={<ReloadOutlined />} onClick={fetchConfig} disabled={!clusterId || selectedBrokerId === undefined}>Refresh</Button>
+                  </Space>
+                </div>
+                <div ref={tableRef}>
+                  <Table
+                    rowKey="name"
+                    components={tableComponents}
+                    columns={columns}
+                    dataSource={filtered}
+                    loading={loading}
+                    locale={{ emptyText: selectedBrokerId === undefined ? (clusterId ? 'Please select a broker node above' : 'Please select a cluster first') : 'No config data' }}
+                    size="small"
+                    scroll={{ x: 'max-content', y: tableScrollY }}
+                    pagination={{ defaultPageSize: 20, pageSizeOptions: ['20', '50', '100'], showSizeChanger: true, showTotal: (total) => `${total} items total`, size: 'small' }}
+                  />
+                </div>
+              </div>
+            ),
+          },
+          {
+            key: 'compare',
+            label: (
+              <span>
+                Broker Comparison
+                {diffCount > 0 && (
+                  <Badge count={diffCount} offset={[6, -2]} style={{ backgroundColor: '#fa8c16', fontSize: 11 }} />
+                )}
+              </span>
+            ),
+            children: (
+              <div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
+                  <Space>
+                    <Switch size="small" checked={diffOnly} onChange={setDiffOnly} />
+                    <span style={{ fontSize: 13 }}>Differences only</span>
+                    {diffCount > 0 && <Tag color="orange">{diffCount} parameter{diffCount !== 1 ? 's' : ''} differ across brokers</Tag>}
+                    {diffCount === 0 && compareSnapshots.length > 0 && <Tag color="success">All brokers consistent</Tag>}
+                  </Space>
+                  <Space>
+                    <Input.Search
+                      placeholder="Search parameter"
+                      value={compareSearch}
+                      onChange={e => setCompareSearch(e.target.value)}
+                      style={{ width: 240 }}
+                      allowClear
+                    />
+                    <Button icon={<ReloadOutlined />} onClick={fetchCompareData} disabled={!clusterId}>Refresh</Button>
+                  </Space>
+                </div>
+                <Table
+                  rowKey="key"
+                  columns={compareColumns}
+                  dataSource={filteredCompareRows}
+                  loading={compareLoading}
+                  locale={{ emptyText: clusterId ? 'No data — click Refresh' : 'Please select a cluster first' }}
+                  size="small"
+                  scroll={{ x: 'max-content', y: 'calc(100vh - 300px)' }}
+                  onRow={(r: any) => ({ style: r.consistent ? {} : { backgroundColor: '#fffbe6' } })}
+                  pagination={{ defaultPageSize: 20, pageSizeOptions: ['20', '50', '100'], showSizeChanger: true, showTotal: (total) => `${total} items`, size: 'small' }}
+                />
+              </div>
+            ),
+          },
+        ]}
       />
-      </div>
 
       <Modal
         title={`Edit Config — ${editRecord?.name}`}

@@ -403,6 +403,21 @@ func KafkaGetClusterConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, configs)
 }
 
+// KafkaGetAllBrokersConfig fetches configs from all brokers in parallel and
+// returns a per-broker snapshot list for cross-broker comparison.
+func KafkaGetAllBrokersConfig(c *gin.Context) {
+	cluster, ok := getKafkaCluster(c)
+	if !ok {
+		return
+	}
+	snaps, err := services.GetAllBrokersConfigs(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, snaps)
+}
+
 func KafkaUpdateClusterConfig(c *gin.Context) {
 	cluster, ok := getKafkaCluster(c)
 	if !ok {

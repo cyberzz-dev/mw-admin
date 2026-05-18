@@ -66,6 +66,7 @@ func main() {
 
 	// Cluster config and version
 	kafka.GET("/clusters/:id/config", handlers.KafkaGetClusterConfig)
+	kafka.GET("/clusters/:id/config/compare", handlers.KafkaGetAllBrokersConfig)
 	kafka.PUT("/clusters/:id/config", middleware.PermissionOrOwnerRequired("kafka_cluster_edit", "kafka_clusters"), handlers.KafkaUpdateClusterConfig)
 	kafka.GET("/clusters/:id/version", handlers.KafkaGetClusterVersion)
 

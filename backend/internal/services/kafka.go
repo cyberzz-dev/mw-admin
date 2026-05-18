@@ -858,6 +858,86 @@ type BrokerConfig struct {
 	ClusterWide bool   `json:"cluster_wide"` // true = supports cluster-wide (default-broker) application
 }
 
+// BrokerConfigSnapshot holds the full config set for one broker.
+type BrokerConfigSnapshot struct {
+	BrokerID int32          `json:"broker_id"`
+	Host     string         `json:"host"`
+	Configs  []BrokerConfig `json:"configs"`
+}
+
+// GetAllBrokersConfigs fetches configs from every broker in parallel and returns
+// one snapshot per broker, sorted by broker ID.
+func GetAllBrokersConfigs(cluster *models.KafkaCluster) ([]BrokerConfigSnapshot, error) {
+	cfg, err := newSaramaConfig(cluster)
+	if err != nil {
+		return nil, err
+	}
+	client, err := sarama.NewClient(clusterBrokers(cluster), cfg)
+	if err != nil {
+		return nil, err
+	}
+	defer client.Close()
+
+	brokers := client.Brokers()
+	if len(brokers) == 0 {
+		return nil, fmt.Errorf("no brokers available")
+	}
+
+	admin, err := sarama.NewClusterAdminFromClient(client)
+	if err != nil {
+		return nil, err
+	}
+	defer admin.Close()
+
+	type item struct {
+		snap BrokerConfigSnapshot
+		err  error
+	}
+	ch := make(chan item, len(brokers))
+	for _, b := range brokers {
+		b := b
+		go func() {
+			entries, err := admin.DescribeConfig(sarama.ConfigResource{
+				Type:        sarama.BrokerResource,
+				Name:        fmt.Sprintf("%d", b.ID()),
+				ConfigNames: nil,
+			})
+			if err != nil {
+				ch <- item{err: fmt.Errorf("broker %d: %w", b.ID(), err)}
+				return
+			}
+			configs := make([]BrokerConfig, 0, len(entries))
+			for _, e := range entries {
+				configs = append(configs, BrokerConfig{
+					Name:        e.Name,
+					Value:       e.Value,
+					IsDefault:   e.Default,
+					ReadOnly:    e.ReadOnly,
+					Sensitive:   e.Sensitive,
+					Source:      brokerConfigSource(e.Source),
+					ClusterWide: configSupportsClusterWide(e),
+				})
+			}
+			ch <- item{snap: BrokerConfigSnapshot{
+				BrokerID: b.ID(),
+				Host:     b.Addr(),
+				Configs:  configs,
+			}}
+		}()
+	}
+
+	snaps := make([]BrokerConfigSnapshot, 0, len(brokers))
+	for range brokers {
+		r := <-ch
+		if r.err != nil {
+			return nil, r.err
+		}
+		snaps = append(snaps, r.snap)
+	}
+	sort.Slice(snaps, func(i, j int) bool { return snaps[i].BrokerID < snaps[j].BrokerID })
+	return snaps, nil
+}
+
 func GetClusterConfigs(cluster *models.KafkaCluster, brokerID int32) ([]BrokerConfig, error) {
 	cfg, err := newSaramaConfig(cluster)
 	if err != nil {

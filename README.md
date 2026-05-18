@@ -354,7 +354,7 @@ On first run, a default admin account is created:
 | Field | Value |
 |-------|-------|
 | Username | `admin` |
-| Password | `admin123` |
+| Password | `admin` |
 
 **Change the default password immediately after first login.**
 
@@ -718,6 +718,6 @@ build-linux.bat arm64
 | 字段 | 值 |
 |------|-----|
 | 用户名 | `admin` |
-| 密码 | `admin123` |
+| 密码 | `admin` |
 
 **请在首次登录后立即修改默认密码。**

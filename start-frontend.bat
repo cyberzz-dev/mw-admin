@@ -1,0 +1,6 @@
+@echo off
+cd /d "%~dp0frontend"
+echo Installing frontend dependencies...
+npm install
+echo Starting frontend on :3000...
+npm run dev

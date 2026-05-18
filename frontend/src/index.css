@@ -1,0 +1,220 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  background: #eaeded;
+  color: #0f1111;
+  overflow: hidden;
+}
+
+/* AWS-style page header */
+.page-header {
+  margin-bottom: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e1e4e5;
+}
+
+.page-header h2 {
+  font-size: 18px;
+  font-weight: 700;
+  color: #0f1111;
+}
+
+/* AWS-style section title */
+.aws-section-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: #0f1111;
+  margin: 0 0 12px 0;
+}
+
+/* AWS-style table row hover */
+.ant-table-tbody > tr:hover > td {
+  background: #f7f8f8 !important;
+}
+
+/* Table header weight */
+.ant-table-thead > tr > th {
+  font-weight: 600 !important;
+  font-size: 13px !important;
+  color: #0f1111 !important;
+  white-space: nowrap !important;
+}
+
+/* Hide Ant Design's fixed-header scrollbar compensation column */
+.ant-table-cell-scrollbar {
+  width: 0 !important;
+  min-width: 0 !important;
+  padding: 0 !important;
+  border: none !important;
+  overflow: hidden !important;
+}
+
+/* Remove vertical separator lines between header cells */
+.ant-table-thead > tr > th::before,
+.ant-table-thead > tr > td::before {
+  display: none !important;
+}
+
+/* Stronger header-to-body divider */
+.ant-table-thead > tr:last-child > th,
+.ant-table-thead > tr:last-child > td {
+  border-bottom: 2px solid #d5d9d9 !important;
+}
+
+/* Tighter table cell font */
+.ant-table-tbody > tr > td {
+  font-size: 13px;
+}
+
+/* Row dividers: lighter, no heavy lines */
+.ant-table-tbody > tr > td {
+  border-bottom-color: #f0f2f4 !important;
+}
+
+/* Last visible body row: no bottom divider */
+.ant-table-tbody > tr:last-child > td {
+  border-bottom: none !important;
+}
+
+/* Expanded row: subtle gray background */
+.ant-table-expanded-row > .ant-table-cell {
+  background: #fafbfc !important;
+  border-bottom: 1px solid #e8eaed !important;
+}
+
+/* Sort icon: primary orange when active */
+.ant-table-column-sorter-up.active,
+.ant-table-column-sorter-down.active {
+  color: #ec7211;
+}
+
+/* Filter icon: orange when active */
+.ant-table-filter-trigger.active {
+  color: #ec7211;
+}
+
+/* Pagination: tighter top margin */
+.ant-table-wrapper .ant-pagination {
+  margin: 10px 0 2px !important;
+}
+
+/* Selected row highlight */
+.ant-table-tbody > tr.row-selected > td {
+  background: #cce5ff !important;
+  border-top: 2px solid #1677ff !important;
+  border-bottom: 2px solid #1677ff !important;
+  color: #002766 !important;
+  font-weight: 600 !important;
+  box-shadow: inset 0 0 0 0 transparent;
+}
+.ant-table-tbody > tr.row-selected > td:first-child {
+  border-left: 4px solid #0050b3 !important;
+}
+.ant-table-tbody > tr.row-selected:hover > td {
+  background: #bcd8ff !important;
+}
+
+/* AWS orange accent for primary buttons */
+.ant-btn-primary {
+  background-color: #ec7211;
+  border-color: #ec7211;
+}
+.ant-btn-primary:hover {
+  background-color: #d4600a !important;
+  border-color: #d4600a !important;
+}
+
+/* Loading skeleton pulse */
+@keyframes aws-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.aws-skeleton-row {
+  animation: aws-pulse 1.4s ease-in-out infinite;
+  background: #e8eaed;
+  border-radius: 4px;
+  height: 16px;
+  margin-bottom: 12px;
+}
+
+/* Drawer loading overlay */
+.aws-drawer-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 8px 0;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+/* AWS-style sidebar navigation */
+.sidenav-item:hover {
+  color: #0972d3 !important;
+  background: #f1f3f3;
+}
+.sidenav-item.active {
+  color: #0972d3 !important;
+  background: #e8f4fd;
+}
+.sidenav-item.active:hover {
+  color: #0972d3 !important;
+  background: #daeffe;
+}
+
+/* Resizable column handle */
+.react-resizable {
+  position: relative;
+  background-clip: padding-box;
+}
+.react-resizable-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  top: 0;
+  width: 8px;
+  cursor: col-resize;
+  z-index: 1;
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  /* reset react-resizable default corner icon */
+  background-image: none !important;
+  background: none !important;
+  padding: 0 !important;
+}
+.react-resizable-handle::after {
+  content: '';
+  width: 1px;
+  background: #d5dbdb;
+  transition: background 0.15s, width 0.15s;
+  flex-shrink: 0;
+}
+.react-resizable-handle:hover::after,
+.react-resizable-handle:active::after {
+  width: 2px;
+  background: #0972d3;
+}
+::-webkit-scrollbar-track {
+  background: #f2f3f3;
+}
+::-webkit-scrollbar-thumb {
+  background: #aab7b8;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #7e8e8e;
+}
+

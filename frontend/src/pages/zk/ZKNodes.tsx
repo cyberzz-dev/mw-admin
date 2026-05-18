@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react'
+import React, { useState, useCallback, useEffect, useRef } from 'react'
 import {
   Tree, Spin, Button, Space, Table, Tag, Modal,
   Form, Input, Select, message, Tooltip, Empty, Checkbox, Row, Col, Badge,
@@ -167,6 +167,30 @@ export default function ZKNodes() {
 
   // Server stats
   const [clusterStats, setClusterStats] = useState<{ watch_count: number; znode_count: number; connections: number } | null>(null)
+
+  // Panel resize
+  const [treeWidth, setTreeWidth] = useState(320)
+  const treeWidthRef = useRef(320)
+  treeWidthRef.current = treeWidth
+  const [isDragging, setIsDragging] = useState(false)
+
+  const handleDividerMouseDown = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startWidth = treeWidthRef.current
+    setIsDragging(true)
+    const onMouseMove = (ev: MouseEvent) => {
+      const newWidth = Math.max(180, Math.min(640, startWidth + ev.clientX - startX))
+      setTreeWidth(newWidth)
+    }
+    const onMouseUp = () => {
+      setIsDragging(false)
+      document.removeEventListener('mousemove', onMouseMove)
+      document.removeEventListener('mouseup', onMouseUp)
+    }
+    document.addEventListener('mousemove', onMouseMove)
+    document.addEventListener('mouseup', onMouseUp)
+  }, [])
 
   // Load clusters
   useEffect(() => {
@@ -513,10 +537,10 @@ export default function ZKNodes() {
       </div>
 
       {/* Body: Tree + Detail */}
-      <div style={{ display: 'flex', height: 'calc(100vh - 240px)', gap: 16, overflow: 'hidden', marginTop: 16 }}>
+      <div style={{ display: 'flex', height: 'calc(100vh - 240px)', overflow: 'hidden', marginTop: 16, userSelect: isDragging ? 'none' : undefined }}>
         {/* Left: Tree */}
         <div style={{
-          width: 320, flexShrink: 0, border: '1px solid #e8e8e8', borderRadius: 8,
+          width: treeWidth, flexShrink: 0, border: '1px solid #e8e8e8', borderRadius: 8,
           display: 'flex', flexDirection: 'column', background: '#fff', overflow: 'hidden',
         }}>
           {/* Tree panel header */}
@@ -615,8 +639,23 @@ export default function ZKNodes() {
           </div>
         </div>
 
+        {/* Drag divider */}
+        <div
+          onMouseDown={handleDividerMouseDown}
+          style={{
+            width: 8, flexShrink: 0, cursor: 'col-resize',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <div style={{
+            width: 3, height: 48, borderRadius: 2,
+            background: isDragging ? '#1677ff' : '#d9d9d9',
+            transition: isDragging ? 'none' : 'background 0.15s',
+          }} />
+        </div>
+
         {/* Right: Detail Panel */}
-        <div style={{ flex: 1, border: '1px solid #e8e8e8', borderRadius: 8, overflowY: 'auto', background: '#fff' }}>
+        <div style={{ flex: 1, minWidth: 0, border: '1px solid #e8e8e8', borderRadius: 8, overflowY: 'auto', background: '#fff' }}>
           {!selectedPath ? (
             <Empty description="Select a znode to view details" style={{ marginTop: 80 }} />
           ) : (!nodeInfo && loadingNode) ? (

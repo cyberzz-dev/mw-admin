@@ -152,18 +152,31 @@ Open `http://localhost:3000` in your browser.
 
 ## Build for Production
 
-### Windows
+### Windows → Windows (`mw-admin.exe`)
 
 ```bat
 build.bat
 ```
 
-### Linux / macOS
+### Linux / macOS → same platform (`mw-admin`)
 
 ```bash
 chmod +x build.sh
 ./build.sh
 ```
+
+### Windows → Linux cross-compile (`mw-admin`)
+
+```bat
+:: Build for linux/amd64 (default)
+build-linux.bat
+
+:: Build for linux/arm64
+build-linux.bat arm64
+```
+
+> Go's built-in cross-compilation is used (`GOOS=linux GOARCH=amd64 CGO_ENABLED=0`).  
+> No extra toolchain or WSL is required — just Go and Node.js on Windows.
 
 The build scripts:
 1. Run `npm run build` in `frontend/` — outputs to `frontend/dist/`
@@ -503,18 +516,31 @@ npm run dev
 
 ## 生产构建
 
-### Windows
+### Windows → Windows（`mw-admin.exe`）
 
 ```bat
 build.bat
 ```
 
-### Linux / macOS
+### Linux / macOS → 同平台（`mw-admin`）
 
 ```bash
 chmod +x build.sh
 ./build.sh
 ```
+
+### Windows → Linux 跨平台编译（`mw-admin`）
+
+```bat
+:: 编译 linux/amd64（默认）
+build-linux.bat
+
+:: 编译 linux/arm64
+build-linux.bat arm64
+```
+
+> 使用 Go 原生交叉编译（`GOOS=linux GOARCH=amd64 CGO_ENABLED=0`），  
+> 无需安装额外工具链或 WSL，仅需 Windows 上的 Go 和 Node.js 即可。
 
 构建脚本执行流程：
 1. 在 `frontend/` 目录执行 `npm run build`，输出到 `frontend/dist/`

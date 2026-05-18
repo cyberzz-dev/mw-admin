@@ -469,7 +469,7 @@ export default function ZKNodes() {
   ]
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+    <div style={{ display: 'flex', flexDirection: 'column' }}>
       {/* Header */}
       <div className="page-header">
         <Space>
@@ -513,7 +513,7 @@ export default function ZKNodes() {
       </div>
 
       {/* Body: Tree + Detail */}
-      <div style={{ display: 'flex', flex: 1, gap: 16, overflow: 'hidden', marginTop: 16 }}>
+      <div style={{ display: 'flex', height: 'calc(100vh - 240px)', gap: 16, overflow: 'hidden', marginTop: 16 }}>
         {/* Left: Tree */}
         <div style={{
           width: 320, flexShrink: 0, border: '1px solid #e8e8e8', borderRadius: 8,

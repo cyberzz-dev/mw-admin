@@ -4,6 +4,8 @@
 
 A web-based administration platform for managing Kafka, Elasticsearch, and ZooKeeper clusters. Built with a Go backend and a React/TypeScript frontend.
 
+> **All-in-One** — ships as a **single self-contained binary** with the frontend embedded. No separate web server, no external database, no runtime dependencies. Drop the binary anywhere and run.
+
 ---
 
 ## Table of Contents
@@ -367,6 +369,8 @@ On first run, a default admin account is created:
 [English](#middleware-admin-platform) | **中文**
 
 基于 Web 的中间件管理平台，支持 Kafka、Elasticsearch 和 ZooKeeper 集群的统一管理。后端使用 Go，前端使用 React + TypeScript。
+
+> **All-in-One 单二进制部署** — 前端页面通过 `go:embed` 内嵌到 Go 二进制中，数据库使用内嵌 SQLite。**无需 Web 服务器、无需外部数据库、无需任何运行时依赖**，下载即用。
 
 ---
 

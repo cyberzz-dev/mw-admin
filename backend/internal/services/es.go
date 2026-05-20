@@ -9,27 +9,125 @@ import (
 	"io"
 	"mw-admin/internal/models"
 	"net/http"
+	"net/url"
 	"sort"
+	"strings"
+	"sync"
 	"time"
-
-	"github.com/elastic/go-elasticsearch/v8"
 )
 
-func newESClient(cluster *models.ESCluster) (*elasticsearch.Client, error) {
-	addresses := make([]string, 0, len(cluster.Nodes))
-	for _, n := range cluster.Nodes {
-		addresses = append(addresses, fmt.Sprintf("%s://%s:%d", cluster.Scheme, n.Host, n.Port))
-	}
+// ---- HTTP helper ----
 
-	cfg := elasticsearch.Config{
-		Addresses: addresses,
+var (
+	esHTTPClient     *http.Client
+	esHTTPClientOnce sync.Once
+)
+
+func getHTTPClient() *http.Client {
+	esHTTPClientOnce.Do(func() {
+		esHTTPClient = &http.Client{
+			Timeout: 30 * time.Second,
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // #nosec G402 — admin tool
+			},
+		}
+	})
+	return esHTTPClient
+}
+
+func esBaseURL(cluster *models.ESCluster) (string, error) {
+	if len(cluster.Nodes) == 0 {
+		return "", fmt.Errorf("cluster has no nodes configured")
+	}
+	n := cluster.Nodes[0]
+	scheme := cluster.Scheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	return fmt.Sprintf("%s://%s:%d", scheme, n.Host, n.Port), nil
+}
+
+func esDoRaw(cluster *models.ESCluster, method, path string, body io.Reader) (*http.Response, []byte, error) {
+	base, err := esBaseURL(cluster)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	req, err := http.NewRequestWithContext(context.Background(), method, base+path, body)
+	if err != nil {
+		return nil, nil, fmt.Errorf("build request: %w", err)
 	}
 	if cluster.Username != "" {
-		cfg.Username = cluster.Username
-		cfg.Password = cluster.Password
+		req.SetBasicAuth(cluster.Username, cluster.Password)
 	}
-	return elasticsearch.NewClient(cfg)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	req.Header.Set("Accept", "application/json")
+
+	resp, err := getHTTPClient().Do(req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("request failed: %w", err)
+	}
+	respBytes, readErr := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if readErr != nil {
+		return nil, nil, fmt.Errorf("read response: %w", readErr)
+	}
+	return resp, respBytes, nil
 }
+
+func esDo(cluster *models.ESCluster, method, path string, body io.Reader) (*http.Response, []byte, error) {
+	resp, respBytes, err := esDoRaw(cluster, method, path, body)
+	if err != nil {
+		return nil, nil, err
+	}
+	if resp.StatusCode >= 400 {
+		return nil, nil, fmt.Errorf("es error [%d]: %s", resp.StatusCode, string(respBytes))
+	}
+	return resp, respBytes, nil
+}
+
+func esGetJSON(cluster *models.ESCluster, path string, dst interface{}) error {
+	_, body, err := esDo(cluster, "GET", path, nil)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(body, dst)
+}
+
+type esVersion struct {
+	Major int
+	Minor int
+}
+
+func detectESVersion(cluster *models.ESCluster) (esVersion, error) {
+	var info struct {
+		Version struct {
+			Number string `json:"number"`
+		} `json:"version"`
+	}
+	if err := esGetJSON(cluster, "/", &info); err != nil {
+		return esVersion{}, err
+	}
+	parts := strings.SplitN(info.Version.Number, ".", 3)
+	v := esVersion{}
+	if len(parts) >= 1 {
+		fmt.Sscanf(parts[0], "%d", &v.Major)
+	}
+	if len(parts) >= 2 {
+		fmt.Sscanf(parts[1], "%d", &v.Minor)
+	}
+	return v, nil
+}
+
+func (v esVersion) supportsComposableTemplates() bool {
+	return v.Major > 7 || (v.Major == 7 && v.Minor >= 8)
+}
+
+// ---- ES types ----
 
 // ESIndex holds index metadata
 type ESIndex struct {
@@ -43,29 +141,11 @@ type ESIndex struct {
 }
 
 func ListESIndices(cluster *models.ESCluster) ([]ESIndex, error) {
-	client, err := newESClient(cluster)
-	if err != nil {
-		return nil, err
-	}
-
-	res, err := client.Cat.Indices(
-		client.Cat.Indices.WithContext(context.Background()),
-		client.Cat.Indices.WithFormat("json"),
-		client.Cat.Indices.WithH("index", "health", "status", "docs.count", "store.size", "pri", "rep"),
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return nil, fmt.Errorf("es error: %s", res.String())
-	}
-
 	var indices []ESIndex
-	if err := json.NewDecoder(res.Body).Decode(&indices); err != nil {
-		return nil, err
-	}
-	return indices, nil
+	err := esGetJSON(cluster,
+		"/_cat/indices?format=json&h=index,health,status,docs.count,store.size,pri,rep",
+		&indices)
+	return indices, err
 }
 
 // ESNodeInfo holds node information
@@ -95,58 +175,33 @@ type esAllocRow struct {
 }
 
 func ListESNodes(cluster *models.ESCluster) ([]ESNodeInfo, error) {
-	client, err := newESClient(cluster)
-	if err != nil {
-		return nil, err
-	}
-
-	res, err := client.Cat.Nodes(
-		client.Cat.Nodes.WithContext(context.Background()),
-		client.Cat.Nodes.WithFormat("json"),
-		client.Cat.Nodes.WithH("name", "ip", "node.role", "load_1m", "heap.percent", "cpu"),
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return nil, fmt.Errorf("es error: %s", res.String())
-	}
-
 	var nodes []ESNodeInfo
-	if err := json.NewDecoder(res.Body).Decode(&nodes); err != nil {
+	if err := esGetJSON(cluster,
+		"/_cat/nodes?format=json&h=name,ip,node.role,load_1m,heap.percent,cpu",
+		&nodes); err != nil {
 		return nil, err
 	}
 
 	// Fetch _cat/allocation and merge disk info by node name
-	allocRes, allocErr := client.Cat.Allocation(
-		client.Cat.Allocation.WithContext(context.Background()),
-		client.Cat.Allocation.WithFormat("json"),
-		client.Cat.Allocation.WithH("node", "shards", "disk.indices", "disk.used", "disk.avail", "disk.total", "disk.percent"),
-	)
-	if allocErr == nil {
-		defer allocRes.Body.Close()
-		if !allocRes.IsError() {
-			var allocs []esAllocRow
-			if json.NewDecoder(allocRes.Body).Decode(&allocs) == nil {
-				allocMap := make(map[string]esAllocRow, len(allocs))
-				for _, a := range allocs {
-					allocMap[a.Node] = a
-				}
-				for i, n := range nodes {
-					if a, ok := allocMap[n.Name]; ok {
-						nodes[i].Shards = a.Shards
-						nodes[i].DiskIndices = a.DiskIndices
-						nodes[i].DiskUsed = a.DiskUsed
-						nodes[i].DiskAvail = a.DiskAvail
-						nodes[i].DiskTotal = a.DiskTotal
-						nodes[i].DiskPercent = a.DiskPercent
-					}
-				}
+	var allocs []esAllocRow
+	if err := esGetJSON(cluster,
+		"/_cat/allocation?format=json&h=node,shards,disk.indices,disk.used,disk.avail,disk.total,disk.percent",
+		&allocs); err == nil {
+		allocMap := make(map[string]esAllocRow, len(allocs))
+		for _, a := range allocs {
+			allocMap[a.Node] = a
+		}
+		for i, n := range nodes {
+			if a, ok := allocMap[n.Name]; ok {
+				nodes[i].Shards = a.Shards
+				nodes[i].DiskIndices = a.DiskIndices
+				nodes[i].DiskUsed = a.DiskUsed
+				nodes[i].DiskAvail = a.DiskAvail
+				nodes[i].DiskTotal = a.DiskTotal
+				nodes[i].DiskPercent = a.DiskPercent
 			}
 		}
 	}
-
 	return nodes, nil
 }
 
@@ -160,32 +215,35 @@ type ESTemplate struct {
 	RawJSON       json.RawMessage `json:"raw_json"`
 }
 
+// ListESTemplates detects ES version and uses the appropriate template API:
+// - ES >= 7.8: uses _index_template (composable templates)
+// - ES < 7.8:  uses _template (legacy templates)
 func ListESTemplates(cluster *models.ESCluster) ([]ESTemplate, error) {
-	client, err := newESClient(cluster)
+	ver, verErr := detectESVersion(cluster)
+	if verErr == nil {
+		if ver.supportsComposableTemplates() {
+			return listComposableTemplates(cluster)
+		}
+		return listLegacyTemplates(cluster)
+	}
+	// Fall back: try composable first, if version detection fails
+	templates, err := listComposableTemplates(cluster)
 	if err != nil {
-		return nil, err
+		return listLegacyTemplates(cluster)
 	}
-	res, err := client.Indices.GetIndexTemplate(
-		client.Indices.GetIndexTemplate.WithContext(context.Background()),
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return nil, fmt.Errorf("es error: %s", res.String())
-	}
+	return templates, nil
+}
 
+func listComposableTemplates(cluster *models.ESCluster) ([]ESTemplate, error) {
 	var raw struct {
 		IndexTemplates []struct {
 			Name          string          `json:"name"`
 			IndexTemplate json.RawMessage `json:"index_template"`
 		} `json:"index_templates"`
 	}
-	if err := json.NewDecoder(res.Body).Decode(&raw); err != nil {
+	if err := esGetJSON(cluster, "/_index_template", &raw); err != nil {
 		return nil, err
 	}
-
 	templates := make([]ESTemplate, 0, len(raw.IndexTemplates))
 	for _, t := range raw.IndexTemplates {
 		var tpl struct {
@@ -208,6 +266,33 @@ func ListESTemplates(cluster *models.ESCluster) ([]ESTemplate, error) {
 	return templates, nil
 }
 
+func listLegacyTemplates(cluster *models.ESCluster) ([]ESTemplate, error) {
+	var raw map[string]json.RawMessage
+	if err := esGetJSON(cluster, "/_template", &raw); err != nil {
+		return nil, err
+	}
+	templates := make([]ESTemplate, 0, len(raw))
+	for name, rawBytes := range raw {
+		var tpl struct {
+			IndexPatterns []string `json:"index_patterns"`
+			Order         int      `json:"order"`
+			Version       int      `json:"version"`
+		}
+		_ = json.Unmarshal(rawBytes, &tpl)
+		templates = append(templates, ESTemplate{
+			Name:          name,
+			IndexPatterns: tpl.IndexPatterns,
+			Priority:      tpl.Order,
+			Version:       tpl.Version,
+			RawJSON:       rawBytes,
+		})
+	}
+	sort.Slice(templates, func(i, j int) bool { return templates[i].Name < templates[j].Name })
+	return templates, nil
+}
+
+// ---- ILM policies ----
+
 // ESILMPolicy holds ILM policy metadata
 type ESILMPolicy struct {
 	Name         string          `json:"name"`
@@ -218,26 +303,10 @@ type ESILMPolicy struct {
 }
 
 func ListESILMPolicies(cluster *models.ESCluster) ([]ESILMPolicy, error) {
-	client, err := newESClient(cluster)
-	if err != nil {
-		return nil, err
-	}
-	res, err := client.ILM.GetLifecycle(
-		client.ILM.GetLifecycle.WithContext(context.Background()),
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return nil, fmt.Errorf("es error: %s", res.String())
-	}
-
 	var raw map[string]json.RawMessage
-	if err := json.NewDecoder(res.Body).Decode(&raw); err != nil {
+	if err := esGetJSON(cluster, "/_ilm/policy", &raw); err != nil {
 		return nil, err
 	}
-
 	policies := make([]ESILMPolicy, 0, len(raw))
 	for name, rawBytes := range raw {
 		var p struct {
@@ -270,206 +339,92 @@ func ListESILMPolicies(cluster *models.ESCluster) ([]ESILMPolicy, error) {
 // ---- Index operations ----
 
 func DeleteESIndex(cluster *models.ESCluster, indexName string) error {
-	client, err := newESClient(cluster)
-	if err != nil {
-		return err
-	}
-	res, err := client.Indices.Delete([]string{indexName}, client.Indices.Delete.WithContext(context.Background()))
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return fmt.Errorf("es error: %s", res.String())
-	}
-	return nil
+	_, _, err := esDo(cluster, "DELETE", "/"+url.PathEscape(indexName), nil)
+	return err
 }
 
 func CloseESIndex(cluster *models.ESCluster, indexName string) error {
-	client, err := newESClient(cluster)
-	if err != nil {
-		return err
-	}
-	res, err := client.Indices.Close([]string{indexName}, client.Indices.Close.WithContext(context.Background()))
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return fmt.Errorf("es error: %s", res.String())
-	}
-	return nil
+	_, _, err := esDo(cluster, "POST", "/"+url.PathEscape(indexName)+"/_close", nil)
+	return err
 }
 
 func OpenESIndex(cluster *models.ESCluster, indexName string) error {
-	client, err := newESClient(cluster)
-	if err != nil {
-		return err
-	}
-	res, err := client.Indices.Open([]string{indexName}, client.Indices.Open.WithContext(context.Background()))
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return fmt.Errorf("es error: %s", res.String())
-	}
-	return nil
+	_, _, err := esDo(cluster, "POST", "/"+url.PathEscape(indexName)+"/_open", nil)
+	return err
 }
 
 func GetESIndexMapping(cluster *models.ESCluster, indexName string) (json.RawMessage, error) {
-	client, err := newESClient(cluster)
+	_, body, err := esDo(cluster, "GET", "/"+url.PathEscape(indexName)+"/_mapping", nil)
 	if err != nil {
 		return nil, err
 	}
-	res, err := client.Indices.GetMapping(
-		client.Indices.GetMapping.WithContext(context.Background()),
-		client.Indices.GetMapping.WithIndex(indexName),
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return nil, fmt.Errorf("es error: %s", res.String())
-	}
-	var raw json.RawMessage
-	if err := json.NewDecoder(res.Body).Decode(&raw); err != nil {
-		return nil, err
-	}
-	return raw, nil
+	return json.RawMessage(body), nil
 }
 
 func GetESIndexSettings(cluster *models.ESCluster, indexName string) (json.RawMessage, error) {
-	client, err := newESClient(cluster)
+	_, body, err := esDo(cluster, "GET", "/"+url.PathEscape(indexName)+"/_settings", nil)
 	if err != nil {
 		return nil, err
 	}
-	res, err := client.Indices.GetSettings(
-		client.Indices.GetSettings.WithContext(context.Background()),
-		client.Indices.GetSettings.WithIndex(indexName),
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return nil, fmt.Errorf("es error: %s", res.String())
-	}
-	var raw json.RawMessage
-	if err := json.NewDecoder(res.Body).Decode(&raw); err != nil {
-		return nil, err
-	}
-	return raw, nil
+	return json.RawMessage(body), nil
 }
 
-func PutESIndexMapping(cluster *models.ESCluster, indexName string, body []byte) error {
-	client, err := newESClient(cluster)
-	if err != nil {
-		return err
-	}
-	res, err := client.Indices.PutMapping(
-		[]string{indexName},
-		bytes.NewReader(body),
-		client.Indices.PutMapping.WithContext(context.Background()),
-	)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return fmt.Errorf("es error: %s", res.String())
-	}
-	return nil
+func PutESIndexMapping(cluster *models.ESCluster, indexName string, bodyBytes []byte) error {
+	_, _, err := esDo(cluster, "PUT", "/"+url.PathEscape(indexName)+"/_mapping", bytes.NewReader(bodyBytes))
+	return err
 }
 
-func PutESIndexSettings(cluster *models.ESCluster, indexName string, body []byte) error {
-	client, err := newESClient(cluster)
-	if err != nil {
-		return err
-	}
-	res, err := client.Indices.PutSettings(
-		bytes.NewReader(body),
-		client.Indices.PutSettings.WithContext(context.Background()),
-		client.Indices.PutSettings.WithIndex(indexName),
-	)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return fmt.Errorf("es error: %s", res.String())
-	}
-	return nil
+func PutESIndexSettings(cluster *models.ESCluster, indexName string, bodyBytes []byte) error {
+	_, _, err := esDo(cluster, "PUT", "/"+url.PathEscape(indexName)+"/_settings", bytes.NewReader(bodyBytes))
+	return err
 }
 
 // ---- Template operations ----
 
+// DeleteESTemplate deletes a template. Tries composable first, then legacy.
 func DeleteESTemplate(cluster *models.ESCluster, name string) error {
-	client, err := newESClient(cluster)
-	if err != nil {
+	ver, verErr := detectESVersion(cluster)
+	if verErr == nil {
+		if ver.supportsComposableTemplates() {
+			_, _, err := esDo(cluster, "DELETE", "/_index_template/"+url.PathEscape(name), nil)
+			return err
+		}
+		_, _, err := esDo(cluster, "DELETE", "/_template/"+url.PathEscape(name), nil)
 		return err
 	}
-	res, err := client.Indices.DeleteIndexTemplate(name, client.Indices.DeleteIndexTemplate.WithContext(context.Background()))
+	// Try composable first, fall back to legacy if version detection fails
+	_, _, err := esDo(cluster, "DELETE", "/_index_template/"+url.PathEscape(name), nil)
 	if err != nil {
-		return err
+		_, _, err = esDo(cluster, "DELETE", "/_template/"+url.PathEscape(name), nil)
 	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return fmt.Errorf("es error: %s", res.String())
-	}
-	return nil
+	return err
 }
 
-func PutESTemplate(cluster *models.ESCluster, name string, body []byte) error {
-	client, err := newESClient(cluster)
-	if err != nil {
+// PutESTemplate creates/updates a template. Uses composable for ES >= 7.8, legacy otherwise.
+func PutESTemplate(cluster *models.ESCluster, name string, bodyBytes []byte) error {
+	ver, verErr := detectESVersion(cluster)
+	if verErr == nil && ver.supportsComposableTemplates() {
+		_, _, err := esDo(cluster, "PUT", "/_index_template/"+url.PathEscape(name), bytes.NewReader(bodyBytes))
 		return err
 	}
-	res, err := client.Indices.PutIndexTemplate(name, bytes.NewReader(body), client.Indices.PutIndexTemplate.WithContext(context.Background()))
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return fmt.Errorf("es error: %s", res.String())
-	}
-	return nil
+	// Default to legacy template for older ES
+	_, _, err := esDo(cluster, "PUT", "/_template/"+url.PathEscape(name), bytes.NewReader(bodyBytes))
+	return err
 }
 
 // ---- ILM operations ----
 
 func DeleteESILMPolicy(cluster *models.ESCluster, name string) error {
-	client, err := newESClient(cluster)
-	if err != nil {
-		return err
-	}
-	res, err := client.ILM.DeleteLifecycle(name, client.ILM.DeleteLifecycle.WithContext(context.Background()))
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return fmt.Errorf("es error: %s", res.String())
-	}
-	return nil
+	_, _, err := esDo(cluster, "DELETE", "/_ilm/policy/"+url.PathEscape(name), nil)
+	return err
 }
 
-func PutESILMPolicy(cluster *models.ESCluster, name string, body []byte) error {
-	client, err := newESClient(cluster)
-	if err != nil {
-		return err
-	}
-	res, err := client.ILM.PutLifecycle(name, client.ILM.PutLifecycle.WithBody(bytes.NewReader(body)), client.ILM.PutLifecycle.WithContext(context.Background()))
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return fmt.Errorf("es error: %s", res.String())
-	}
-	return nil
+func PutESILMPolicy(cluster *models.ESCluster, name string, bodyBytes []byte) error {
+	_, _, err := esDo(cluster, "PUT", "/_ilm/policy/"+url.PathEscape(name), bytes.NewReader(bodyBytes))
+	return err
 }
+
+// ---- Dev Console ----
 
 // ESDevConsoleResult holds the raw ES response for dev console
 type ESDevConsoleResult struct {
@@ -482,48 +437,20 @@ func ESDevConsole(cluster *models.ESCluster, method, path string, body []byte) (
 	if len(cluster.Nodes) == 0 {
 		return nil, fmt.Errorf("cluster has no nodes configured")
 	}
-	node := cluster.Nodes[0]
-	scheme := cluster.Scheme
-	if scheme == "" {
-		scheme = "http"
-	}
 	if path == "" {
 		path = "/"
 	} else if path[0] != '/' {
 		path = "/" + path
 	}
-	fullURL := fmt.Sprintf("%s://%s:%d%s", scheme, node.Host, node.Port, path)
 
 	var bodyReader io.Reader
 	if len(body) > 0 {
 		bodyReader = bytes.NewReader(body)
 	}
 
-	req, err := http.NewRequestWithContext(context.Background(), method, fullURL, bodyReader)
+	resp, respBytes, err := esDoRaw(cluster, method, path, bodyReader)
 	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
-	}
-	if cluster.Username != "" {
-		req.SetBasicAuth(cluster.Username, cluster.Password)
-	}
-	if bodyReader != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	req.Header.Set("Accept", "application/json")
-
-	transport := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // #nosec G402 — admin tool, user controls cluster
-	}
-	httpClient := &http.Client{Timeout: 30 * time.Second, Transport: transport}
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+		return nil, err
 	}
 
 	var raw json.RawMessage

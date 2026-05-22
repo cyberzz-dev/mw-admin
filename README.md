@@ -8,6 +8,14 @@ A web-based administration platform for managing Kafka, Elasticsearch, and ZooKe
 
 ---
 
+## Screenshots
+
+![Kafka Topics](kafka-topci.png)
+
+![Kafka Consumer Groups](kafka-consumergroup.png)
+
+---
+
 ## Table of Contents
 
 - [Features](#features)

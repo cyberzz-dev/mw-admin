@@ -33,6 +33,7 @@ func AuthRequired() gin.HandlerFunc {
 			viewScope = "all"
 		}
 		c.Set("view_scope", viewScope)
+		c.Set("component_access", claims.ComponentAccess)
 		c.Next()
 	}
 }

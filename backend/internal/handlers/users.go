@@ -18,11 +18,12 @@ func ListUsers(c *gin.Context) {
 
 func CreateUser(c *gin.Context) {
 	var req struct {
-		Username    string `json:"username"`
-		Password    string `json:"password"`
-		Role        string `json:"role"`
-		Permissions string `json:"permissions"`
-		ViewScope   string `json:"view_scope"`
+		Username        string `json:"username"`
+		Password        string `json:"password"`
+		Role            string `json:"role"`
+		Permissions     string `json:"permissions"`
+		ViewScope       string `json:"view_scope"`
+		ComponentAccess string `json:"component_access"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -46,11 +47,12 @@ func CreateUser(c *gin.Context) {
 		viewScope = "all"
 	}
 	user := models.User{
-		Username:    req.Username,
-		Password:    hash,
-		Role:        role,
-		Permissions: req.Permissions,
-		ViewScope:   viewScope,
+		Username:        req.Username,
+		Password:        hash,
+		Role:            role,
+		Permissions:     req.Permissions,
+		ViewScope:       viewScope,
+		ComponentAccess: req.ComponentAccess,
 	}
 	if err := db.DB.Create(&user).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -67,11 +69,12 @@ func UpdateUser(c *gin.Context) {
 		return
 	}
 	var req struct {
-		Username    string `json:"username"`
-		Password    string `json:"password"`
-		Role        string `json:"role"`
-		Permissions string `json:"permissions"`
-		ViewScope   string `json:"view_scope"`
+		Username        string `json:"username"`
+		Password        string `json:"password"`
+		Role            string `json:"role"`
+		Permissions     string `json:"permissions"`
+		ViewScope       string `json:"view_scope"`
+		ComponentAccess string `json:"component_access"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -82,6 +85,7 @@ func UpdateUser(c *gin.Context) {
 	}
 	user.Role = req.Role
 	user.Permissions = req.Permissions
+	user.ComponentAccess = req.ComponentAccess
 	if req.ViewScope != "" {
 		user.ViewScope = req.ViewScope
 	}

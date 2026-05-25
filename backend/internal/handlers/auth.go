@@ -30,7 +30,7 @@ func Login(c *gin.Context) {
 		return
 	}
 
-	token, err := services.GenerateToken(user.ID, user.Username, user.Role, user.Permissions, user.ViewScope)
+	token, err := services.GenerateToken(user.ID, user.Username, user.Role, user.Permissions, user.ViewScope, user.ComponentAccess)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成令牌失败"})
 		return
@@ -39,21 +39,23 @@ func Login(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"token": token,
 		"user": gin.H{
-			"id":          user.ID,
-			"username":    user.Username,
-			"role":        user.Role,
-			"permissions": user.Permissions,
-			"view_scope":  user.ViewScope,
+			"id":               user.ID,
+			"username":         user.Username,
+			"role":             user.Role,
+			"permissions":      user.Permissions,
+			"view_scope":       user.ViewScope,
+			"component_access": user.ComponentAccess,
 		},
 	})
 }
 
 func GetMe(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
-		"id":          c.GetUint("user_id"),
-		"username":    c.GetString("username"),
-		"role":        c.GetString("role"),
-		"permissions": c.GetString("permissions"),
-		"view_scope":  c.GetString("view_scope"),
+		"id":               c.GetUint("user_id"),
+		"username":         c.GetString("username"),
+		"role":             c.GetString("role"),
+		"permissions":      c.GetString("permissions"),
+		"view_scope":       c.GetString("view_scope"),
+		"component_access": c.GetString("component_access"),
 	})
 }

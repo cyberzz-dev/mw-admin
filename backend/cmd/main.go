@@ -1,6 +1,10 @@
 package main
 
 import (
+	"flag"
+	"fmt"
+	"log"
+	"mw-admin/internal/config"
 	"mw-admin/internal/db"
 	"mw-admin/internal/handlers"
 	"mw-admin/internal/middleware"
@@ -10,8 +14,15 @@ import (
 )
 
 func main() {
-	gin.SetMode(gin.ReleaseMode)
-	db.Init("mw-admin.db")
+	configPath := flag.String("config", "", "path to YAML config file (default: config.yaml)")
+	flag.Parse()
+
+	if err := config.Load(*configPath); err != nil {
+		log.Fatalf("failed to load config: %v", err)
+	}
+
+	gin.SetMode(config.Global.Server.Mode)
+	db.Init()
 
 	r := gin.Default()
 	r.Use(cors.New(cors.Config{
@@ -124,5 +135,6 @@ func main() {
 
 	setupStaticFiles(r)
 
-	r.Run(":8080")
+	addr := fmt.Sprintf(":%d", config.Global.Server.Port)
+	r.Run(addr)
 }

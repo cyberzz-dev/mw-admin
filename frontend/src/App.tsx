@@ -58,7 +58,7 @@ function RequireAdmin({ children }: { children: React.ReactNode }) {
 function SideNav({ collapsed }: { collapsed: boolean }) {
   const navigate = useNavigate()
   const location = useLocation()
-  const { isAdmin } = useAuth()
+  const { isAdmin, hasComponent } = useAuth()
   const currentPath = location.pathname || '/kafka/clusters'
   const [openGroups, setOpenGroups] = useState<Set<string>>(
     () => new Set(['kafka', 'es', 'zk', 'system'])
@@ -73,7 +73,7 @@ function SideNav({ collapsed }: { collapsed: boolean }) {
     })
   }
 
-  const groups = [
+  const allGroups = [
     {
       key: 'kafka',
       label: 'Kafka',
@@ -104,6 +104,10 @@ function SideNav({ collapsed }: { collapsed: boolean }) {
         { path: '/zk/nodes', label: 'ZNode Browser' },
       ],
     },
+  ]
+
+  const groups = [
+    ...allGroups.filter(g => hasComponent(g.key)),
     ...(isAdmin ? [{
       key: 'system',
       label: 'Administration',
@@ -208,8 +212,16 @@ function SideNav({ collapsed }: { collapsed: boolean }) {
 function AppLayout() {
   const navigate = useNavigate()
   const location = useLocation()
-  const { user, logout, isAdmin } = useAuth()
+  const { user, logout, isAdmin, hasComponent } = useAuth()
   const [collapsed, setCollapsed] = useState(false)
+
+  // Determine the default landing page based on component access
+  const defaultPath = (() => {
+    if (hasComponent('kafka')) return '/kafka/clusters'
+    if (hasComponent('es')) return '/es/clusters'
+    if (hasComponent('zk')) return '/zk/clusters'
+    return '/kafka/clusters'
+  })()
 
   const selectedKey = location.pathname || '/kafka/clusters'
   const crumbs = breadcrumbMap[selectedKey] || []
@@ -332,7 +344,7 @@ function AppLayout() {
               boxShadow: '0 1px 3px rgba(0,28,36,.08)',
             }}>
               <Routes>
-                <Route path="/" element={<KafkaClusters />} />
+                <Route path="/" element={<Navigate to={defaultPath} replace />} />
                 <Route path="/kafka/clusters" element={<KafkaClusters />} />
                 <Route path="/kafka/topics" element={<KafkaTopics />} />
                 <Route path="/kafka/consumer-groups" element={<KafkaConsumerGroups />} />

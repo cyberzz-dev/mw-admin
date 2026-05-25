@@ -1,11 +1,12 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react'
+import React, { createContext, useContext, useState, useCallback } from 'react'
 
 export interface CurrentUser {
   id: number
   username: string
   role: 'admin' | 'user'
-  permissions: string[] // array of permission strings
+  permissions: string[]       // array of permission strings
   view_scope: 'all' | 'own'
+  component_access: string[]  // ["kafka","es","zk"]; empty array = all components
 }
 
 interface AuthContextValue {
@@ -14,6 +15,7 @@ interface AuthContextValue {
   login: (token: string, user: CurrentUser) => void
   logout: () => void
   hasPermission: (perm: string) => boolean
+  hasComponent: (component: string) => boolean
   isAdmin: boolean
   isOwnScopeUser: boolean
 }
@@ -24,6 +26,7 @@ const AuthContext = createContext<AuthContextValue>({
   login: () => {},
   logout: () => {},
   hasPermission: () => false,
+  hasComponent: () => true,
   isAdmin: false,
   isOwnScopeUser: false,
 })
@@ -61,8 +64,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return (user.permissions || []).includes(perm)
   }, [user])
 
+  /** Returns true when the current user is allowed to access the given component module.
+   *  Admin always returns true. For regular users, an empty component_access means all
+   *  components are allowed; otherwise only listed components are accessible. */
+  const hasComponent = useCallback((component: string): boolean => {
+    if (!user) return false
+    if (user.role === 'admin') return true
+    const access = user.component_access || []
+    if (access.length === 0) return true
+    return access.includes(component)
+  }, [user])
+
   return (
-    <AuthContext.Provider value={{ user, token, login, logout, hasPermission, isAdmin, isOwnScopeUser }}>
+    <AuthContext.Provider value={{ user, token, login, logout, hasPermission, hasComponent, isAdmin, isOwnScopeUser }}>
       {children}
     </AuthContext.Provider>
   )

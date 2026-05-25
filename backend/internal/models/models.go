@@ -68,12 +68,13 @@ type ZKCluster struct {
 
 // User represents a platform user
 type User struct {
-	ID          uint      `json:"id" gorm:"primaryKey;autoIncrement"`
-	Username    string    `json:"username" gorm:"uniqueIndex;not null"`
-	Password    string    `json:"-" gorm:"column:password;not null"`
-	Role        string    `json:"role" gorm:"default:'user'"`      // admin | user
-	Permissions string    `json:"permissions" gorm:"type:text"`    // JSON array of permission strings
-	ViewScope   string    `json:"view_scope" gorm:"default:'all'"` // all | own
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID              uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	Username        string    `json:"username" gorm:"uniqueIndex;not null"`
+	Password        string    `json:"-" gorm:"column:password;not null"`
+	Role            string    `json:"role" gorm:"default:'user'"`        // admin | user
+	Permissions     string    `json:"permissions" gorm:"type:text"`      // JSON array of permission strings
+	ViewScope       string    `json:"view_scope" gorm:"default:'all'"`   // all | own
+	ComponentAccess string    `json:"component_access" gorm:"type:text"` // JSON array: ["kafka","es","zk"]; empty = all
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }

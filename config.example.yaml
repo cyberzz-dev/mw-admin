@@ -1,0 +1,56 @@
+# mw-admin configuration example
+# Copy this file to config.yaml and adjust values before starting the server.
+# All fields are optional – built-in defaults are shown below.
+# Environment variables (JWT_SECRET, DB_TYPE, MYSQL_HOST, MYSQL_PASSWORD)
+# always override file values.
+
+# ──────────────────────────────────────────────
+# HTTP server
+# ──────────────────────────────────────────────
+server:
+  port: 8080          # listening port
+  mode: release       # gin mode: debug | release
+
+# ──────────────────────────────────────────────
+# Database
+# ──────────────────────────────────────────────
+database:
+  # Choose the backend: sqlite | mysql
+  driver: sqlite
+
+  # SQLite – just the file path (WAL mode is enabled automatically)
+  dsn: "mw-admin.db"
+
+  # MySQL DSN format:
+  #   user:password@tcp(host:port)/dbname?param=value
+  # Required params for correctness:
+  #   charset=utf8mb4  — full Unicode (emoji, CJK, etc.)
+  #   parseTime=True   — map DATETIME → time.Time
+  #   loc=Local        — use server local timezone
+  # dsn: "appuser:s3cr3t@tcp(mysql:3306)/mw_admin?charset=utf8mb4&parseTime=True&loc=Local"
+
+  # Connection pool (applies to both SQLite and MySQL)
+  pool:
+    max_open_conns:    25    # max concurrent connections
+    max_idle_conns:    10    # idle connections to keep open
+    conn_max_lifetime: 3600  # seconds before a connection is recycled
+    conn_max_idle_time: 600  # seconds before an idle connection is closed
+
+# ──────────────────────────────────────────────
+# Authentication / JWT
+# ──────────────────────────────────────────────
+auth:
+  # IMPORTANT: change this to a long random string in production!
+  jwt_secret: mw-admin-jwt-secret-change-in-prod
+  jwt_expire_hours: 24   # token lifetime in hours
+
+# ──────────────────────────────────────────────
+# Redis  (reserved for future features)
+# ──────────────────────────────────────────────
+redis:
+  enabled:  false       # set to true to activate
+  host:     127.0.0.1
+  port:     6379
+  password: ""          # leave empty if no auth required
+  db:       0           # Redis database index (0-15)
+  pool_size: 10         # max connections in the pool

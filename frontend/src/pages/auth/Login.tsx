@@ -20,7 +20,11 @@ export default function Login() {
       if (user.permissions) {
         try { permissions = JSON.parse(user.permissions) } catch { permissions = [] }
       }
-      login(token, { ...user, permissions })
+      let component_access: string[] = []
+      if (user.component_access) {
+        try { component_access = JSON.parse(user.component_access) } catch { component_access = [] }
+      }
+      login(token, { ...user, permissions, component_access })
       navigate('/', { replace: true })
     } catch (e: any) {
       message.error(e.response?.data?.error || 'Login failed')

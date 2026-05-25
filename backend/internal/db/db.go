@@ -2,33 +2,43 @@ package db
 
 import (
 	"log"
+	"mw-admin/internal/config"
 	"mw-admin/internal/models"
 	"time"
 
 	"github.com/glebarez/sqlite"
 	"golang.org/x/crypto/bcrypt"
+	mysqldriver "gorm.io/driver/mysql"
 	"gorm.io/gorm"
 )
 
 var DB *gorm.DB
 
-func Init(dbPath string) {
+func Init() {
+	cfg := config.Global.Database
 	var err error
-	DB, err = gorm.Open(sqlite.Open(dbPath+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=cache_size(-64000)"), &gorm.Config{})
-	if err != nil {
-		log.Fatalf("failed to connect database: %v", err)
+
+	switch cfg.Driver {
+	case "mysql":
+		DB, err = gorm.Open(mysqldriver.Open(cfg.DSN), &gorm.Config{})
+		if err != nil {
+			log.Fatalf("failed to connect MySQL: %v", err)
+		}
+	default: // sqlite
+		DB, err = gorm.Open(sqlite.Open(cfg.DSN+"?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=cache_size(-64000)"), &gorm.Config{})
+		if err != nil {
+			log.Fatalf("failed to connect SQLite: %v", err)
+		}
 	}
 
-	// Configure connection pool: WAL allows concurrent reads, so allow multiple open connections.
-	// SQLite serialises writers itself; busy_timeout handles transient lock contention.
 	sqlDB, err := DB.DB()
 	if err != nil {
 		log.Fatalf("failed to get underlying sql.DB: %v", err)
 	}
-	sqlDB.SetMaxOpenConns(25)
-	sqlDB.SetMaxIdleConns(10)
-	sqlDB.SetConnMaxLifetime(time.Hour)
-	sqlDB.SetConnMaxIdleTime(10 * time.Minute)
+	sqlDB.SetMaxOpenConns(cfg.Pool.MaxOpenConns)
+	sqlDB.SetMaxIdleConns(cfg.Pool.MaxIdleConns)
+	sqlDB.SetConnMaxLifetime(time.Duration(cfg.Pool.ConnMaxLifetime) * time.Second)
+	sqlDB.SetConnMaxIdleTime(time.Duration(cfg.Pool.ConnMaxIdleTime) * time.Second)
 
 	err = DB.AutoMigrate(
 		&models.KafkaCluster{},

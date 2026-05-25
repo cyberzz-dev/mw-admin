@@ -6,6 +6,12 @@ import {
 import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design/icons'
 import { listUsers, createUser, updateUser, deleteUser } from '../../services/api'
 
+const COMPONENT_OPTIONS = [
+  { value: 'kafka', label: 'Kafka' },
+  { value: 'es',    label: 'Elasticsearch' },
+  { value: 'zk',    label: 'ZooKeeper' },
+]
+
 const PERMISSION_GROUPS = [
   {
     label: 'Kafka Cluster',
@@ -83,7 +89,7 @@ export default function Users() {
   const openCreate = () => {
     setEditing(null)
     form.resetFields()
-    form.setFieldsValue({ role: 'user', permissions: [], view_scope: 'all' })
+    form.setFieldsValue({ role: 'user', permissions: [], view_scope: 'all', component_access: [] })
     setModalOpen(true)
   }
 
@@ -93,11 +99,16 @@ export default function Users() {
     if (record.permissions) {
       try { perms = JSON.parse(record.permissions) } catch { perms = [] }
     }
+    let compAccess: string[] = []
+    if (record.component_access) {
+      try { compAccess = JSON.parse(record.component_access) } catch { compAccess = [] }
+    }
     form.setFieldsValue({
       username: record.username,
       role: record.role,
       permissions: perms,
       view_scope: record.view_scope || 'all',
+      component_access: compAccess,
       password: '',
     })
     setModalOpen(true)
@@ -110,6 +121,7 @@ export default function Users() {
       role: values.role,
       permissions: JSON.stringify(values.role === 'admin' ? [] : (values.permissions || [])),
       view_scope: values.role === 'admin' ? 'all' : (values.view_scope || 'all'),
+      component_access: JSON.stringify(values.role === 'admin' ? [] : (values.component_access || [])),
     }
     try {
       if (editing) {
@@ -177,6 +189,23 @@ export default function Users() {
       },
     },
     {
+      title: 'Component Access', dataIndex: 'component_access', width: 220,
+      render: (v: string, record: any) => {
+        if (record.role === 'admin') return <Tag color="gold">All (Admin)</Tag>
+        let comps: string[] = []
+        try { comps = JSON.parse(v || '[]') } catch { comps = [] }
+        if (!comps.length) return <Tag color="green">All components</Tag>
+        return (
+          <span style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+            {comps.map(c => {
+              const found = COMPONENT_OPTIONS.find(x => x.value === c)
+              return <Tag key={c} color="blue">{found?.label || c}</Tag>
+            })}
+          </span>
+        )
+      },
+    },
+    {
       title: 'Actions', width: 140,
       render: (_: any, record: any) => (
         <Space>
@@ -231,6 +260,16 @@ export default function Users() {
             {({ getFieldValue }) =>
               getFieldValue('role') !== 'admin' ? (
                 <>
+                  <Form.Item name="component_access" label="Component Access"
+                    extra="Select accessible modules. Leave empty to allow all components.">
+                    <Select
+                      mode="multiple"
+                      placeholder="All components (no restriction)"
+                      maxTagCount="responsive"
+                      style={{ width: '100%' }}
+                      options={COMPONENT_OPTIONS}
+                    />
+                  </Form.Item>
                   <Form.Item name="permissions" label="Permissions">
                     <Select
                       mode="multiple"

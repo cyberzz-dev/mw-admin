@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react'
 import {
   Table, message, Space, Button, Tag, Input, Switch, Modal, Drawer, Typography, Tooltip,
 } from 'antd'
-import { EyeOutlined } from '@ant-design/icons'
+import { EyeOutlined, CopyOutlined } from '@ant-design/icons'
 import ClusterSelector from '../../components/ClusterSelector'
 import { useResizableColumns, tableComponents } from '../../components/ResizableColumns'
 import {
@@ -17,8 +17,8 @@ const phaseColor: Record<string, string> = {
 }
 const phaseOrder = ['hot', 'warm', 'cold', 'frozen', 'delete']
 
-export default function ESILMPolicies() {
-  const [clusterId, setClusterId] = useState<number | undefined>()
+export default function ESILMPolicies({ fixedClusterId }: { fixedClusterId?: number } = {}) {
+  const [clusterId, setClusterId] = useState<number | undefined>(fixedClusterId)
   const [policies, setPolicies] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
@@ -82,7 +82,10 @@ export default function ESILMPolicies() {
     setEditName(record.name)
     const raw = record.raw_json
     try {
-      setEditJson(JSON.stringify(typeof raw === 'string' ? JSON.parse(raw) : raw, null, 2))
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
+      // Strip read-only fields returned by GET _ilm/policy that ES rejects on PUT.
+      const { version: _v, modified_date: _md, modified_date_millis: _mdm, in_use_by: _iub, ...clean } = parsed
+      setEditJson(JSON.stringify(clean, null, 2))
     } catch {
       setEditJson(typeof raw === 'string' ? raw : '{}')
     }
@@ -102,7 +105,9 @@ export default function ESILMPolicies() {
     if (!name) { message.error('Policy name is required'); return }
     setEditSaving(true)
     try {
-      const body = JSON.parse(editJson)
+      const parsed = JSON.parse(editJson)
+      // Strip read-only fields that ES rejects on PUT _ilm/policy.
+      const { version: _v, modified_date: _md, modified_date_millis: _mdm, in_use_by: _iub, ...body } = parsed
       await putESILMPolicy(clusterId, name, body)
       message.success(`Policy "${name}" saved`)
       setEditModalOpen(false)
@@ -188,15 +193,17 @@ export default function ESILMPolicies() {
   return (
     <div>
       <div className="page-header">
-        <Space>
-          <h2 style={{ margin: 0 }}>ILM Policies</h2>
-          <ClusterSelector
-            value={clusterId}
-            onChange={setClusterId}
-            fetchClusters={listESClusters}
-            placeholder="Select ES cluster"
-          />
-        </Space>
+        {!fixedClusterId && (
+          <Space>
+            <h2 style={{ margin: 0 }}>ILM Policies</h2>
+            <ClusterSelector
+              value={clusterId}
+              onChange={setClusterId}
+              fetchClusters={listESClusters}
+              placeholder="Select ES cluster"
+            />
+          </Space>
+        )}
         <Space>
           <Switch
             checked={hideSystem}
@@ -238,6 +245,26 @@ export default function ESILMPolicies() {
         onClose={() => setViewRecord(null)}
         width={640}
         styles={{ body: { padding: 16 } }}
+        extra={
+          viewRecord && (
+            <Tooltip title="Copy JSON">
+              <Button
+                size="small"
+                icon={<CopyOutlined />}
+                onClick={() => {
+                  const raw = viewRecord.raw_json
+                  const text = JSON.stringify(
+                    typeof raw === 'string' ? JSON.parse(raw) : raw,
+                    null, 2
+                  )
+                  navigator.clipboard.writeText(text)
+                    .then(() => message.success('Copied to clipboard'))
+                    .catch(() => message.error('Copy failed'))
+                }}
+              >Copy</Button>
+            </Tooltip>
+          )
+        }
       >
         {viewRecord && (
           <pre style={{ background: '#f5f5f5', border: '1px solid #e5e7e8', borderRadius: 4, padding: 12, fontSize: 12, overflowX: 'auto', margin: 0 }}>
@@ -271,7 +298,20 @@ export default function ESILMPolicies() {
             />
           </div>
         )}
-        <label style={{ display: 'block', marginBottom: 4 }}>Policy JSON</label>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+          <label>Policy JSON</label>
+          <Tooltip title="Copy JSON">
+            <Button
+              size="small"
+              icon={<CopyOutlined />}
+              onClick={() =>
+                navigator.clipboard.writeText(editJson)
+                  .then(() => message.success('Copied to clipboard'))
+                  .catch(() => message.error('Copy failed'))
+              }
+            >Copy</Button>
+          </Tooltip>
+        </div>
         <textarea
           value={editJson}
           onChange={e => setEditJson(e.target.value)}

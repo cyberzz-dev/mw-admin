@@ -3,6 +3,7 @@ package handlers
 import (
 	"fmt"
 	"io"
+	"log"
 	"mw-admin/internal/db"
 	"mw-admin/internal/models"
 	"mw-admin/internal/services"
@@ -45,6 +46,9 @@ func CreateESCluster(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if err := services.RegisterESCluster(&cluster); err != nil {
+		log.Printf("[consul] register es %q: %v", cluster.Name, err)
+	}
 	cluster.Password = ""
 	c.JSON(http.StatusCreated, cluster)
 }
@@ -71,24 +75,57 @@ func UpdateESCluster(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	// Deregister old consul services while old nodes are still in memory
+	services.DeregisterESCluster(&cluster)
 	db.DB.Where("cluster_id = ?", id).Delete(&models.ESNode{})
 	cluster.Name = input.Name
 	cluster.Description = input.Description
 	cluster.Username = input.Username
 	cluster.Scheme = input.Scheme
+	cluster.MetricPort = input.MetricPort
 	if input.Password != "" {
 		cluster.Password = input.Password
 	}
 	cluster.Nodes = input.Nodes
 	db.DB.Save(&cluster)
+	if err := services.RegisterESCluster(&cluster); err != nil {
+		log.Printf("[consul] register es %q: %v", cluster.Name, err)
+	}
 	cluster.Password = ""
 	c.JSON(http.StatusOK, cluster)
 }
 
 func DeleteESCluster(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
+	var cluster models.ESCluster
+	if err := db.DB.Preload("Nodes").First(&cluster, uint(id)).Error; err == nil {
+		services.DeregisterESCluster(&cluster)
+	}
 	db.DB.Delete(&models.ESCluster{}, id)
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+}
+
+// ESConsulRegister manually (re-)registers an ES cluster in Consul.
+func ESConsulRegister(c *gin.Context) {
+	cluster, ok := getESCluster(c)
+	if !ok {
+		return
+	}
+	if err := services.RegisterESCluster(cluster); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "registered"})
+}
+
+// ESConsulDeregister manually deregisters an ES cluster from Consul.
+func ESConsulDeregister(c *gin.Context) {
+	cluster, ok := getESCluster(c)
+	if !ok {
+		return
+	}
+	services.DeregisterESCluster(cluster)
+	c.JSON(http.StatusOK, gin.H{"message": "deregistered"})
 }
 
 func getESCluster(c *gin.Context) (*models.ESCluster, bool) {
@@ -334,6 +371,81 @@ func ESPutIndexSettings(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"message": "updated"})
+}
+
+// ---- Component Template operations ----
+
+func ESListComponentTemplates(c *gin.Context) {
+	cluster, ok := getESCluster(c)
+	if !ok {
+		return
+	}
+	templates, err := services.ListESComponentTemplates(cluster)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, templates)
+}
+
+func ESDeleteComponentTemplate(c *gin.Context) {
+	cluster, ok := getESCluster(c)
+	if !ok {
+		return
+	}
+	name := c.Query("name")
+	if name == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+	if err := services.DeleteESComponentTemplate(cluster, name); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+}
+
+func ESBulkDeleteComponentTemplates(c *gin.Context) {
+	cluster, ok := getESCluster(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Names []string `json:"names"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	var errs []string
+	for _, n := range req.Names {
+		if err := services.DeleteESComponentTemplate(cluster, n); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %s", n, err.Error()))
+		}
+	}
+	if len(errs) > 0 {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": strings.Join(errs, "; ")})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+}
+
+func ESPutComponentTemplate(c *gin.Context) {
+	cluster, ok := getESCluster(c)
+	if !ok {
+		return
+	}
+	name := c.Param("name")
+	body, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := services.PutESComponentTemplate(cluster, name, body); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "saved"})
 }
 
 // ---- Template operations ----

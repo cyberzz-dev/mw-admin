@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"log"
 	"mw-admin/internal/db"
 	"mw-admin/internal/models"
 	"mw-admin/internal/services"
@@ -44,6 +45,9 @@ func CreateZKCluster(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if err := services.RegisterZKCluster(&cluster); err != nil {
+		log.Printf("[consul] register zk %q: %v", cluster.Name, err)
+	}
 	cluster.Password = ""
 	c.JSON(http.StatusCreated, cluster)
 }
@@ -70,24 +74,57 @@ func UpdateZKCluster(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	// Deregister old consul services before servers/metric port change
+	services.DeregisterZKCluster(&cluster)
 	cluster.Name = input.Name
 	cluster.Description = input.Description
 	cluster.Servers = input.Servers
 	cluster.AuthScheme = input.AuthScheme
 	cluster.SASLMechanism = input.SASLMechanism
 	cluster.Username = input.Username
+	cluster.MetricPort = input.MetricPort
 	if input.Password != "" {
 		cluster.Password = input.Password
 	}
 	db.DB.Save(&cluster)
+	if err := services.RegisterZKCluster(&cluster); err != nil {
+		log.Printf("[consul] register zk %q: %v", cluster.Name, err)
+	}
 	cluster.Password = ""
 	c.JSON(http.StatusOK, cluster)
 }
 
 func DeleteZKCluster(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
+	var cluster models.ZKCluster
+	if err := db.DB.First(&cluster, uint(id)).Error; err == nil {
+		services.DeregisterZKCluster(&cluster)
+	}
 	db.DB.Delete(&models.ZKCluster{}, id)
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+}
+
+// ZKConsulRegister manually (re-)registers a ZooKeeper cluster in Consul.
+func ZKConsulRegister(c *gin.Context) {
+	cluster, ok := getZKCluster(c)
+	if !ok {
+		return
+	}
+	if err := services.RegisterZKCluster(cluster); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "registered"})
+}
+
+// ZKConsulDeregister manually deregisters a ZooKeeper cluster from Consul.
+func ZKConsulDeregister(c *gin.Context) {
+	cluster, ok := getZKCluster(c)
+	if !ok {
+		return
+	}
+	services.DeregisterZKCluster(cluster)
+	c.JSON(http.StatusOK, gin.H{"message": "deregistered"})
 }
 
 // ---- ZK Operations ----

@@ -8,38 +8,71 @@ import (
 	"mw-admin/internal/db"
 	"mw-admin/internal/handlers"
 	"mw-admin/internal/middleware"
+	"mw-admin/internal/models"
+	"mw-admin/internal/services"
+	"mw-admin/internal/session"
 
 	"github.com/gin-contrib/cors"
+	ginsessions "github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
 	configPath := flag.String("config", "", "path to YAML config file (default: config.yaml)")
+	resetPassword := flag.Bool("reset-password", false, "reset a user's password and exit")
+	resetUsername := flag.String("username", "admin", "username whose password to reset (used with -reset-password)")
+	resetNewPwd := flag.String("password", "", "new password (used with -reset-password)")
 	flag.Parse()
 
 	if err := config.Load(*configPath); err != nil {
 		log.Fatalf("failed to load config: %v", err)
 	}
 
+	// ── Password-reset mode ────────────────────────────────────────────────────
+	if *resetPassword {
+		if *resetNewPwd == "" {
+			log.Fatal("usage: mw-admin -reset-password -username <name> -password <new-password>")
+		}
+		db.Init()
+		var user models.User
+		if err := db.DB.Where("username = ?", *resetUsername).First(&user).Error; err != nil {
+			log.Fatalf("user %q not found: %v", *resetUsername, err)
+		}
+		hash, err := services.HashPassword(*resetNewPwd)
+		if err != nil {
+			log.Fatalf("failed to hash password: %v", err)
+		}
+		if err := db.DB.Model(&user).Update("password", hash).Error; err != nil {
+			log.Fatalf("failed to update password: %v", err)
+		}
+		fmt.Printf("Password for user %q has been reset successfully.\n", *resetUsername)
+		return
+	}
+	// ──────────────────────────────────────────────────────────────────────────
+
 	gin.SetMode(config.Global.Server.Mode)
 	db.Init()
+
+	store := session.Init()
 
 	r := gin.Default()
 	r.Use(cors.New(cors.Config{
 		AllowAllOrigins:  true,
 		AllowMethods:     []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "X-CSRF-Token"},
 		AllowCredentials: false,
 	}))
+	r.Use(ginsessions.Sessions(session.Name, store))
 
 	api := r.Group("/api")
 
 	// Public: auth
 	api.POST("/auth/login", handlers.Login)
 
-	// All routes below require a valid JWT
-	auth := api.Group("", middleware.AuthRequired())
+	// All routes below require a valid session
+	auth := api.Group("", middleware.AuthRequired(), middleware.CSRFProtect())
 	auth.GET("/auth/me", handlers.GetMe)
+	auth.POST("/auth/logout", handlers.Logout)
 
 	// User management (admin only)
 	users := auth.Group("/users", middleware.AdminRequired())
@@ -65,9 +98,13 @@ func main() {
 	kafka.PUT("/clusters/:id/topics/:topic/partitions", middleware.PermissionOrOwnerRequired("kafka_topic_edit", "kafka_clusters"), handlers.KafkaUpdateTopicPartitions)
 	kafka.PUT("/clusters/:id/topics/:topic/replication", middleware.PermissionOrOwnerRequired("kafka_topic_edit", "kafka_clusters"), handlers.KafkaAdjustReplication)
 	kafka.GET("/clusters/:id/brokers", handlers.KafkaListBrokers)
+	kafka.GET("/clusters/:id/brokers/:brokerID/partitions", handlers.KafkaListBrokerPartitions)
 	kafka.GET("/clusters/:id/topics/:topic/assignment", handlers.KafkaGetTopicAssignment)
 	kafka.PUT("/clusters/:id/topics/:topic/assignment", middleware.PermissionOrOwnerRequired("kafka_topic_edit", "kafka_clusters"), handlers.KafkaApplyAssignment)
 	kafka.PUT("/clusters/:id/topics/:topic/migrate", middleware.PermissionOrOwnerRequired("kafka_topic_edit", "kafka_clusters"), handlers.KafkaMigratePartitions)
+	kafka.GET("/clusters/:id/reassignment-tasks", handlers.KafkaListReassignmentTasks)
+	kafka.POST("/clusters/:id/reassignment-tasks/:taskID/verify", middleware.PermissionOrOwnerRequired("kafka_topic_edit", "kafka_clusters"), handlers.KafkaVerifyReassignmentTask)
+	kafka.POST("/clusters/:id/reassignment-tasks/:taskID/cancel", middleware.PermissionOrOwnerRequired("kafka_topic_edit", "kafka_clusters"), handlers.KafkaCancelReassignmentTask)
 
 	// Consumer groups
 	kafka.GET("/clusters/:id/consumer-groups", handlers.KafkaListConsumerGroups)
@@ -85,6 +122,10 @@ func main() {
 	kafka.GET("/clusters/:id/topics/:topic/config", handlers.KafkaGetTopicConfig)
 	kafka.PUT("/clusters/:id/topics/:topic/config", middleware.PermissionOrOwnerRequired("kafka_topic_edit", "kafka_clusters"), handlers.KafkaUpdateTopicConfig)
 	kafka.POST("/clusters/:id/topics/:topic/fetch-messages", handlers.KafkaFetchMessages)
+
+	// Kafka consul registration
+	kafka.POST("/clusters/:id/consul/register", middleware.PermissionOrOwnerRequired("kafka_cluster_edit", "kafka_clusters"), handlers.KafkaConsulRegister)
+	kafka.DELETE("/clusters/:id/consul/register", middleware.PermissionOrOwnerRequired("kafka_cluster_edit", "kafka_clusters"), handlers.KafkaConsulDeregister)
 
 	// ES cluster CRUD
 	es := auth.Group("/es")
@@ -110,11 +151,19 @@ func main() {
 	es.DELETE("/clusters/:id/templates", handlers.ESDeleteTemplate)
 	es.POST("/clusters/:id/templates/bulk-delete", handlers.ESBulkDeleteTemplates)
 	es.PUT("/clusters/:id/templates/:name", handlers.ESPutTemplate)
+	es.GET("/clusters/:id/component-templates", handlers.ESListComponentTemplates)
+	es.DELETE("/clusters/:id/component-templates", handlers.ESDeleteComponentTemplate)
+	es.POST("/clusters/:id/component-templates/bulk-delete", handlers.ESBulkDeleteComponentTemplates)
+	es.PUT("/clusters/:id/component-templates/:name", handlers.ESPutComponentTemplate)
 	es.GET("/clusters/:id/ilm", handlers.ESListILMPolicies)
 	es.DELETE("/clusters/:id/ilm", handlers.ESDeleteILMPolicy)
 	es.POST("/clusters/:id/ilm/bulk-delete", handlers.ESBulkDeleteILMPolicies)
 	es.PUT("/clusters/:id/ilm/:name", handlers.ESPutILMPolicy)
 	es.POST("/clusters/:id/console", handlers.ESDevConsole)
+
+	// ES consul registration
+	es.POST("/clusters/:id/consul/register", middleware.PermissionOrOwnerRequired("es_cluster_edit", "es_clusters"), handlers.ESConsulRegister)
+	es.DELETE("/clusters/:id/consul/register", middleware.PermissionOrOwnerRequired("es_cluster_edit", "es_clusters"), handlers.ESConsulDeregister)
 
 	// ZooKeeper cluster CRUD
 	zkr := auth.Group("/zk")
@@ -132,6 +181,10 @@ func main() {
 	zkr.DELETE("/clusters/:id/node", middleware.PermissionOrOwnerRequired("zk_node_delete", "zk_clusters"), handlers.ZKDeleteNode)
 	zkr.PUT("/clusters/:id/node/acl", middleware.PermissionOrOwnerRequired("zk_node_edit", "zk_clusters"), handlers.ZKSetACL)
 	zkr.GET("/clusters/:id/stats", handlers.ZKGetStats)
+
+	// ZooKeeper consul registration
+	zkr.POST("/clusters/:id/consul/register", middleware.PermissionOrOwnerRequired("zk_cluster_edit", "zk_clusters"), handlers.ZKConsulRegister)
+	zkr.DELETE("/clusters/:id/consul/register", middleware.PermissionOrOwnerRequired("zk_cluster_edit", "zk_clusters"), handlers.ZKConsulDeregister)
 
 	setupStaticFiles(r)
 

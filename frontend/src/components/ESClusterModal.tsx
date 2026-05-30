@@ -25,7 +25,7 @@ export default function ESClusterModal({ open, initialValues, onCancel, onSubmit
           nodes: initialValues.nodes || [{ host: '', port: 9200 }],
         })
       } else {
-        form.setFieldsValue({ scheme: 'http', nodes: [{ host: '', port: 9200 }] })
+        form.setFieldsValue({ scheme: 'http', nodes: [{ host: '', port: 9200 }], metric_port: 9114 })
       }
     }
   }, [open, initialValues])
@@ -57,6 +57,10 @@ export default function ESClusterModal({ open, initialValues, onCancel, onSubmit
             placeholder={initialValues ? 'Leave blank to keep unchanged' : ''}
             autoComplete="new-password"
           />
+        </Form.Item>
+
+        <Form.Item name="metric_port" label="Metric Port" extra="Prometheus elasticsearch_exporter port (same for all nodes). Default: 9114.">
+          <InputNumber min={0} max={65535} style={{ width: 140 }} placeholder="9114" />
         </Form.Item>
 
         <Form.List name="nodes">

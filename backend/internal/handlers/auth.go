@@ -1,13 +1,22 @@
 package handlers
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"mw-admin/internal/db"
 	"mw-admin/internal/models"
 	"mw-admin/internal/services"
 	"net/http"
 
+	ginsessions "github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 )
+
+func generateCSRFToken() string {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	return base64.StdEncoding.EncodeToString(b)
+}
 
 func Login(c *gin.Context) {
 	var req struct {
@@ -30,14 +39,24 @@ func Login(c *gin.Context) {
 		return
 	}
 
-	token, err := services.GenerateToken(user.ID, user.Username, user.Role, user.Permissions, user.ViewScope, user.ComponentAccess)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成令牌失败"})
+	csrfToken := generateCSRFToken()
+
+	sess := ginsessions.Default(c)
+	sess.Clear()
+	sess.Set("user_id", user.ID)
+	sess.Set("username", user.Username)
+	sess.Set("role", user.Role)
+	sess.Set("permissions", user.Permissions)
+	sess.Set("view_scope", user.ViewScope)
+	sess.Set("component_access", user.ComponentAccess)
+	sess.Set("csrf_token", csrfToken)
+	if err := sess.Save(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "session save failed"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"token": token,
+		"csrf_token": csrfToken,
 		"user": gin.H{
 			"id":               user.ID,
 			"username":         user.Username,
@@ -49,7 +68,20 @@ func Login(c *gin.Context) {
 	})
 }
 
+func Logout(c *gin.Context) {
+	sess := ginsessions.Default(c)
+	sess.Clear()
+	sess.Options(ginsessions.Options{MaxAge: -1})
+	if err := sess.Save(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "logout failed"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "logged out"})
+}
+
 func GetMe(c *gin.Context) {
+	sess := ginsessions.Default(c)
+	csrfToken, _ := sess.Get("csrf_token").(string)
 	c.JSON(http.StatusOK, gin.H{
 		"id":               c.GetUint("user_id"),
 		"username":         c.GetString("username"),
@@ -57,5 +89,6 @@ func GetMe(c *gin.Context) {
 		"permissions":      c.GetString("permissions"),
 		"view_scope":       c.GetString("view_scope"),
 		"component_access": c.GetString("component_access"),
+		"csrf_token":       csrfToken,
 	})
 }

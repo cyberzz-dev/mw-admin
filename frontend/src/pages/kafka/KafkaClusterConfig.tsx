@@ -6,8 +6,8 @@ import { useResizableColumns, tableComponents } from '../../components/Resizable
 import { useAuth } from '../../contexts/AuthContext'
 import { listKafkaClusters, getClusterConfig, updateClusterConfig, listKafkaBrokers, getAllBrokersConfig } from '../../services/api'
 
-export default function KafkaClusterConfig() {
-  const [clusterId, setClusterId] = useState<number | undefined>()
+export default function KafkaClusterConfig({ fixedClusterId }: { fixedClusterId?: number } = {}) {
+  const [clusterId, setClusterId] = useState<number | undefined>(fixedClusterId)
   const [configs, setConfigs] = useState<any[]>([])
   const [filtered, setFiltered] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
@@ -250,17 +250,19 @@ export default function KafkaClusterConfig() {
 
   return (
     <div>
-      <div className="page-header">
-        <Space>
-          <h2 style={{ margin: 0 }}>Cluster Configuration</h2>
-          <ClusterSelector
-            value={clusterId}
-            onChange={setClusterId}
-            fetchClusters={listKafkaClusters}
-            placeholder="Select Kafka cluster"
-          />
-        </Space>
-      </div>
+      {!fixedClusterId && (
+        <div className="page-header">
+          <Space>
+            <h2 style={{ margin: 0 }}>Cluster Configuration</h2>
+            <ClusterSelector
+              value={clusterId}
+              onChange={setClusterId}
+              fetchClusters={listKafkaClusters}
+              placeholder="Select Kafka cluster"
+            />
+          </Space>
+        </div>
+      )}
 
       <Tabs
         activeKey={activeTab}

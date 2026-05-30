@@ -11,8 +11,8 @@ import { listKafkaClusters, listConsumerGroups, getConsumerGroupDetail, deleteCo
 
 const { Text } = Typography
 
-export default function KafkaConsumerGroups() {
-  const [clusterId, setClusterId] = useState<number | undefined>()
+export default function KafkaConsumerGroups({ fixedClusterId }: { fixedClusterId?: number } = {}) {
+  const [clusterId, setClusterId] = useState<number | undefined>(fixedClusterId)
   const [groups, setGroups] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [detailCache, setDetailCache] = useState<{ [groupId: string]: any }>({})
@@ -189,7 +189,10 @@ export default function KafkaConsumerGroups() {
   }
 
   const filteredGroups = search
-    ? groups.filter(g => (g.group_id || '').toLowerCase().includes(search.toLowerCase()))
+    ? groups.filter(g => {
+        const q = search.toLowerCase()
+        return (g.group_id || '').toLowerCase().includes(q) || (g.topic || '').toLowerCase().includes(q)
+      })
     : groups
 
   // List columns: one row per (group, topic)
@@ -306,13 +309,17 @@ export default function KafkaConsumerGroups() {
   return (
     <div>
       <div className="page-header" style={{ justifyContent: 'flex-start', gap: 16 }}>
-        <h2 style={{ margin: 0, whiteSpace: 'nowrap' }}>Consumer Groups</h2>
-        <ClusterSelector
-          value={clusterId}
-          onChange={setClusterId}
-          fetchClusters={listKafkaClusters}
-          placeholder="Select Kafka cluster"
-        />
+        {!fixedClusterId && (
+          <>
+            <h2 style={{ margin: 0, whiteSpace: 'nowrap' }}>Consumer Groups</h2>
+            <ClusterSelector
+              value={clusterId}
+              onChange={setClusterId}
+              fetchClusters={listKafkaClusters}
+              placeholder="Select Kafka cluster"
+            />
+          </>
+        )}
         <Space style={{ flex: 1, justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
           {(hasPermission('kafka_consumer_group_delete') || isOwnScopeUser) && selectedGroupKeys.length > 0 && (
             <Button danger icon={<DeleteOutlined />} loading={batchDeleting} onClick={() => { setBatchDeleteInput(''); setBatchDeleteOpen(true) }}>
@@ -320,7 +327,7 @@ export default function KafkaConsumerGroups() {
             </Button>
           )}
           <Input.Search
-            placeholder="Filter groups…"
+            placeholder="Filter by group or topic…"
             allowClear
             value={search}
             onChange={e => setSearch(e.target.value)}

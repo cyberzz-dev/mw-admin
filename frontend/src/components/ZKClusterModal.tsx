@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react'
-import { Modal, Form, Input, Select } from 'antd'
+import { Modal, Form, Input, Select, InputNumber } from 'antd'
 
 const { Option } = Select
 
@@ -24,7 +24,7 @@ export default function ZKClusterModal({ open, initialValues, onCancel, onSubmit
           sasl_mechanism: initialValues.sasl_mechanism || 'DIGEST-MD5',
         })
       } else {
-        form.setFieldsValue({ auth_scheme: 'none', sasl_mechanism: 'DIGEST-MD5' })
+        form.setFieldsValue({ auth_scheme: 'none', sasl_mechanism: 'DIGEST-MD5', metric_port: 9141 })
       }
     }
   }, [open, initialValues])
@@ -86,6 +86,9 @@ export default function ZKClusterModal({ open, initialValues, onCancel, onSubmit
               </>
             ) : null
           }
+        </Form.Item>
+        <Form.Item name="metric_port" label="Metric Port" extra="Prometheus zookeeper_exporter port shared by all ZooKeeper nodes. Default: 9141.">
+          <InputNumber min={0} max={65535} style={{ width: 140 }} placeholder="9141" />
         </Form.Item>
       </Form>
     </Modal>

@@ -3,37 +3,31 @@ package middleware
 import (
 	"encoding/json"
 	"mw-admin/internal/db"
-	"mw-admin/internal/services"
 	"net/http"
 	"strconv"
-	"strings"
 
+	ginsessions "github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 )
 
 func AuthRequired() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		authHeader := c.GetHeader("Authorization")
-		if !strings.HasPrefix(authHeader, "Bearer ") {
+		sess := ginsessions.Default(c)
+		userID, ok := sess.Get("user_id").(uint)
+		if !ok || userID == 0 {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
 		}
-		tokenStr := strings.TrimPrefix(authHeader, "Bearer ")
-		claims, err := services.ParseToken(tokenStr)
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
-			return
-		}
-		c.Set("user_id", claims.UserID)
-		c.Set("username", claims.Username)
-		c.Set("role", claims.Role)
-		c.Set("permissions", claims.Permissions)
-		viewScope := claims.ViewScope
+		viewScope, _ := sess.Get("view_scope").(string)
 		if viewScope == "" {
 			viewScope = "all"
 		}
+		c.Set("user_id", userID)
+		c.Set("username", sess.Get("username").(string))
+		c.Set("role", sess.Get("role").(string))
+		c.Set("permissions", sess.Get("permissions"))
 		c.Set("view_scope", viewScope)
-		c.Set("component_access", claims.ComponentAccess)
+		c.Set("component_access", sess.Get("component_access"))
 		c.Next()
 	}
 }

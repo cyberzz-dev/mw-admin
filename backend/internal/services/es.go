@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,7 +22,15 @@ import (
 var (
 	esHTTPClient     *http.Client
 	esHTTPClientOnce sync.Once
+	esNodeCounter    sync.Map // map[uint]*atomic.Uint64 — round-robin index per cluster
 )
+
+// esPickNodeIndex returns the starting node index for this request using
+// per-cluster atomic round-robin, so requests are evenly spread across nodes.
+func esPickNodeIndex(clusterID uint, total int) int {
+	val, _ := esNodeCounter.LoadOrStore(clusterID, new(atomic.Uint64))
+	return int(val.(*atomic.Uint64).Add(1)-1) % total
+}
 
 func getHTTPClient() *http.Client {
 	esHTTPClientOnce.Do(func() {
@@ -35,48 +44,69 @@ func getHTTPClient() *http.Client {
 	return esHTTPClient
 }
 
-func esBaseURL(cluster *models.ESCluster) (string, error) {
+// esDoRaw sends method+path to an ES cluster node.
+// It uses per-cluster atomic round-robin to pick the starting node, then
+// falls back to the remaining nodes in order if a connection error occurs.
+// The request body is buffered upfront so it can be replayed on retry.
+func esDoRaw(cluster *models.ESCluster, method, path string, body io.Reader) (*http.Response, []byte, error) {
 	if len(cluster.Nodes) == 0 {
-		return "", fmt.Errorf("cluster has no nodes configured")
+		return nil, nil, fmt.Errorf("cluster has no nodes configured")
 	}
-	n := cluster.Nodes[0]
 	scheme := cluster.Scheme
 	if scheme == "" {
 		scheme = "http"
 	}
-	return fmt.Sprintf("%s://%s:%d", scheme, n.Host, n.Port), nil
-}
-
-func esDoRaw(cluster *models.ESCluster, method, path string, body io.Reader) (*http.Response, []byte, error) {
-	base, err := esBaseURL(cluster)
-	if err != nil {
-		return nil, nil, err
-	}
 	if !strings.HasPrefix(path, "/") {
 		path = "/" + path
 	}
-	req, err := http.NewRequestWithContext(context.Background(), method, base+path, body)
-	if err != nil {
-		return nil, nil, fmt.Errorf("build request: %w", err)
-	}
-	if cluster.Username != "" {
-		req.SetBasicAuth(cluster.Username, cluster.Password)
-	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	req.Header.Set("Accept", "application/json")
 
-	resp, err := getHTTPClient().Do(req)
-	if err != nil {
-		return nil, nil, fmt.Errorf("request failed: %w", err)
+	// Buffer body so it can be replayed on each retry attempt.
+	var bodyBuf []byte
+	if body != nil {
+		var err error
+		bodyBuf, err = io.ReadAll(body)
+		if err != nil {
+			return nil, nil, fmt.Errorf("read request body: %w", err)
+		}
 	}
-	respBytes, readErr := io.ReadAll(resp.Body)
-	resp.Body.Close()
-	if readErr != nil {
-		return nil, nil, fmt.Errorf("read response: %w", readErr)
+
+	startIdx := esPickNodeIndex(cluster.ID, len(cluster.Nodes))
+	var lastErr error
+	for i := 0; i < len(cluster.Nodes); i++ {
+		n := cluster.Nodes[(startIdx+i)%len(cluster.Nodes)]
+		base := fmt.Sprintf("%s://%s:%d", scheme, n.Host, n.Port)
+
+		var bodyReader io.Reader
+		if bodyBuf != nil {
+			bodyReader = bytes.NewReader(bodyBuf)
+		}
+		req, err := http.NewRequestWithContext(context.Background(), method, base+path, bodyReader)
+		if err != nil {
+			lastErr = fmt.Errorf("build request to %s:%d: %w", n.Host, n.Port, err)
+			continue
+		}
+		if cluster.Username != "" {
+			req.SetBasicAuth(cluster.Username, cluster.Password)
+		}
+		if bodyBuf != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		req.Header.Set("Accept", "application/json")
+
+		resp, err := getHTTPClient().Do(req)
+		if err != nil {
+			lastErr = fmt.Errorf("node %s:%d unreachable: %w", n.Host, n.Port, err)
+			continue // network error — try next node
+		}
+		respBytes, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			lastErr = fmt.Errorf("read response from %s:%d: %w", n.Host, n.Port, readErr)
+			continue
+		}
+		return resp, respBytes, nil
 	}
-	return resp, respBytes, nil
+	return nil, nil, fmt.Errorf("all nodes failed, last error: %w", lastErr)
 }
 
 func esDo(cluster *models.ESCluster, method, path string, body io.Reader) (*http.Response, []byte, error) {
@@ -289,6 +319,54 @@ func listLegacyTemplates(cluster *models.ESCluster) ([]ESTemplate, error) {
 	}
 	sort.Slice(templates, func(i, j int) bool { return templates[i].Name < templates[j].Name })
 	return templates, nil
+}
+
+// ---- Component Template operations ----
+
+// ESComponentTemplate holds component template metadata
+type ESComponentTemplate struct {
+	Name    string          `json:"name"`
+	Version int             `json:"version"`
+	RawJSON json.RawMessage `json:"raw_json"`
+}
+
+// ListESComponentTemplates fetches all component templates via /_component_template.
+func ListESComponentTemplates(cluster *models.ESCluster) ([]ESComponentTemplate, error) {
+	var raw struct {
+		ComponentTemplates []struct {
+			Name              string          `json:"name"`
+			ComponentTemplate json.RawMessage `json:"component_template"`
+		} `json:"component_templates"`
+	}
+	if err := esGetJSON(cluster, "/_component_template", &raw); err != nil {
+		return nil, err
+	}
+	templates := make([]ESComponentTemplate, 0, len(raw.ComponentTemplates))
+	for _, t := range raw.ComponentTemplates {
+		var ct struct {
+			Version int `json:"version"`
+		}
+		_ = json.Unmarshal(t.ComponentTemplate, &ct)
+		templates = append(templates, ESComponentTemplate{
+			Name:    t.Name,
+			Version: ct.Version,
+			RawJSON: t.ComponentTemplate,
+		})
+	}
+	sort.Slice(templates, func(i, j int) bool { return templates[i].Name < templates[j].Name })
+	return templates, nil
+}
+
+// DeleteESComponentTemplate deletes a single component template.
+func DeleteESComponentTemplate(cluster *models.ESCluster, name string) error {
+	_, _, err := esDo(cluster, "DELETE", "/_component_template/"+url.PathEscape(name), nil)
+	return err
+}
+
+// PutESComponentTemplate creates or updates a component template.
+func PutESComponentTemplate(cluster *models.ESCluster, name string, bodyBytes []byte) error {
+	_, _, err := esDo(cluster, "PUT", "/_component_template/"+url.PathEscape(name), bytes.NewReader(bodyBytes))
+	return err
 }
 
 // ---- ILM policies ----

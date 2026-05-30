@@ -6,13 +6,13 @@ import { EyeOutlined, CopyOutlined } from '@ant-design/icons'
 import ClusterSelector from '../../components/ClusterSelector'
 import { useResizableColumns, tableComponents } from '../../components/ResizableColumns'
 import {
-  listESClusters, listESTemplates,
-  deleteESTemplate, bulkDeleteESTemplates, putESTemplate,
+  listESClusters, listESComponentTemplates,
+  deleteESComponentTemplate, bulkDeleteESComponentTemplates, putESComponentTemplate,
 } from '../../services/api'
 
 const { Text } = Typography
 
-export default function ESTemplates({ fixedClusterId }: { fixedClusterId?: number } = {}) {
+export default function ESComponentTemplates({ fixedClusterId }: { fixedClusterId?: number } = {}) {
   const [clusterId, setClusterId] = useState<number | undefined>(fixedClusterId)
   const [templates, setTemplates] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
@@ -24,7 +24,7 @@ export default function ESTemplates({ fixedClusterId }: { fixedClusterId?: numbe
   const [viewRecord, setViewRecord] = useState<any>(null)
 
   // Edit/Create modal
-  const [editRecord, setEditRecord] = useState<any>(null) // null = create mode
+  const [editRecord, setEditRecord] = useState<any>(null)
   const [editModalOpen, setEditModalOpen] = useState(false)
   const [editName, setEditName] = useState('')
   const [editJson, setEditJson] = useState('')
@@ -38,12 +38,12 @@ export default function ESTemplates({ fixedClusterId }: { fixedClusterId?: numbe
     if (!clusterId) return
     setLoading(true)
     try {
-      const res = await listESTemplates(clusterId)
+      const res = await listESComponentTemplates(clusterId)
       setTemplates(res.data || [])
       setSelectedRowKeys([])
       setSearch('')
     } catch (e: any) {
-      message.error(e.response?.data?.error || 'Failed to fetch templates')
+      message.error(e.response?.data?.error || 'Failed to fetch component templates')
     }
     setLoading(false)
   }
@@ -66,7 +66,7 @@ export default function ESTemplates({ fixedClusterId }: { fixedClusterId?: numbe
     const raw = record.raw_json
     try {
       const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw
-      // Strip read-only / version-specific fields that ES rejects on PUT _index_template.
+      // Strip version-specific read-only fields that ES may reject on PUT.
       const { deprecated: _dep, ...clean } = parsed
       setEditJson(JSON.stringify(clean, null, 2))
     } catch {
@@ -78,7 +78,7 @@ export default function ESTemplates({ fixedClusterId }: { fixedClusterId?: numbe
   const openCreate = () => {
     setEditRecord(null)
     setEditName('')
-    setEditJson('{}')
+    setEditJson('{\n  "template": {\n    "settings": {},\n    "mappings": {},\n    "aliases": {}\n  }\n}')
     setEditModalOpen(true)
   }
 
@@ -89,10 +89,10 @@ export default function ESTemplates({ fixedClusterId }: { fixedClusterId?: numbe
     setEditSaving(true)
     try {
       const parsed = JSON.parse(editJson)
-      // Strip read-only / version-specific fields that ES rejects on PUT.
+      // Strip version-specific read-only fields that ES rejects on PUT.
       const { deprecated: _dep, ...body } = parsed
-      await putESTemplate(clusterId, name, body)
-      message.success(`Template "${name}" saved`)
+      await putESComponentTemplate(clusterId, name, body)
+      message.success(`Component template "${name}" saved`)
       setEditModalOpen(false)
       fetchTemplates()
     } catch (e: any) {
@@ -106,7 +106,7 @@ export default function ESTemplates({ fixedClusterId }: { fixedClusterId?: numbe
     if (!clusterId || !deleteTarget) return
     setDeleteLoading(true)
     try {
-      await deleteESTemplate(clusterId, deleteTarget)
+      await deleteESComponentTemplate(clusterId, deleteTarget)
       message.success(`Deleted "${deleteTarget}"`)
       setDeleteTarget(null)
       fetchTemplates()
@@ -119,14 +119,14 @@ export default function ESTemplates({ fixedClusterId }: { fixedClusterId?: numbe
   const handleBulkDelete = () => {
     if (!clusterId || selectedRowKeys.length === 0) return
     Modal.confirm({
-      title: `Delete ${selectedRowKeys.length} templates?`,
+      title: `Delete ${selectedRowKeys.length} component templates?`,
       content: 'This action cannot be undone.',
       okText: 'Delete',
       okType: 'danger',
       onOk: async () => {
         try {
-          await bulkDeleteESTemplates(clusterId, selectedRowKeys as string[])
-          message.success(`Deleted ${selectedRowKeys.length} templates`)
+          await bulkDeleteESComponentTemplates(clusterId, selectedRowKeys as string[])
+          message.success(`Deleted ${selectedRowKeys.length} component templates`)
           fetchTemplates()
         } catch (e: any) {
           message.error(e.response?.data?.error || 'Bulk delete failed')
@@ -137,27 +137,12 @@ export default function ESTemplates({ fixedClusterId }: { fixedClusterId?: numbe
 
   const baseColumns = [
     {
-      title: 'Template Name', dataIndex: 'name', width: 240,
+      title: 'Template Name', dataIndex: 'name', width: 320,
       defaultSortOrder: 'ascend' as const,
       sorter: (a: any, b: any) => (a.name || '').localeCompare(b.name || ''),
     },
     {
-      title: 'Index Patterns', dataIndex: 'index_patterns', width: 220,
-      render: (v: string[]) => (v || []).map((p: string) => <Tag key={p} color="blue">{p}</Tag>),
-    },
-    {
-      title: 'Composed Of', dataIndex: 'composed_of', width: 220,
-      render: (v: string[]) =>
-        (v || []).length === 0
-          ? <Text type="secondary">-</Text>
-          : (v || []).map((c: string) => <Tag key={c} color="purple">{c}</Tag>),
-    },
-    {
-      title: 'Priority', dataIndex: 'priority', width: 80,
-      sorter: (a: any, b: any) => (a.priority || 0) - (b.priority || 0),
-    },
-    {
-      title: 'Version', dataIndex: 'version', width: 80,
+      title: 'Version', dataIndex: 'version', width: 100,
       sorter: (a: any, b: any) => (a.version || 0) - (b.version || 0),
       render: (v: number) => v ?? <Text type="secondary">-</Text>,
     },
@@ -179,7 +164,7 @@ export default function ESTemplates({ fixedClusterId }: { fixedClusterId?: numbe
       <div className="page-header">
         {!fixedClusterId && (
           <Space>
-            <h2 style={{ margin: 0 }}>Index Templates</h2>
+            <h2 style={{ margin: 0 }}>Component Templates</h2>
             <ClusterSelector
               value={clusterId}
               onChange={setClusterId}
@@ -219,7 +204,7 @@ export default function ESTemplates({ fixedClusterId }: { fixedClusterId?: numbe
         loading={loading}
         size="small"
         tableLayout="fixed"
-        scroll={{ x: 1100 }}
+        scroll={{ x: 700 }}
       />
 
       {/* View drawer (read-only) */}
@@ -262,7 +247,7 @@ export default function ESTemplates({ fixedClusterId }: { fixedClusterId?: numbe
 
       {/* Edit / Create modal */}
       <Modal
-        title={editRecord ? `Edit template: ${editRecord.name}` : 'Create template'}
+        title={editRecord ? `Edit component template: ${editRecord.name}` : 'Create component template'}
         open={editModalOpen}
         onCancel={() => setEditModalOpen(false)}
         onOk={handleSave}
@@ -277,7 +262,7 @@ export default function ESTemplates({ fixedClusterId }: { fixedClusterId?: numbe
             <Input
               value={editName}
               onChange={e => setEditName(e.target.value)}
-              placeholder="my-template"
+              placeholder="my-component-template"
               autoFocus
             />
           </div>
@@ -305,7 +290,7 @@ export default function ESTemplates({ fixedClusterId }: { fixedClusterId?: numbe
 
       {/* Delete confirmation modal */}
       <Modal
-        title={`Delete template "${deleteTarget}"?`}
+        title={`Delete component template "${deleteTarget}"?`}
         open={!!deleteTarget}
         onCancel={() => setDeleteTarget(null)}
         onOk={handleDelete}

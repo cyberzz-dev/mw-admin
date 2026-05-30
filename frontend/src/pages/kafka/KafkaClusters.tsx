@@ -1,8 +1,9 @@
 import React, { useEffect, useState, useRef, useLayoutEffect } from 'react'
 import { Table, Button, message, Tag, Space, Modal, Input } from 'antd'
-import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design/icons'
+import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, InfoCircleOutlined } from '@ant-design/icons'
 import { listKafkaClusters, getKafkaCluster, createKafkaCluster, updateKafkaCluster, deleteKafkaCluster } from '../../services/api'
 import KafkaClusterModal from '../../components/KafkaClusterModal'
+import KafkaClusterDetail from './KafkaClusterDetail'
 import { useResizableColumns, tableComponents } from '../../components/ResizableColumns'
 import { useAuth } from '../../contexts/AuthContext'
 
@@ -14,6 +15,7 @@ export default function KafkaClusters() {
   const [search, setSearch] = useState('')
   const [deleteConfirm, setDeleteConfirm] = useState<{ label: string; onOk: () => void } | null>(null)
   const [deleteInput, setDeleteInput] = useState('')
+  const [detailCluster, setDetailCluster] = useState<any>(null)
   const { hasPermission, user } = useAuth()
 
   const filteredClusters = search
@@ -102,9 +104,10 @@ export default function KafkaClusters() {
       render: (v: string) => v ? <Tag color="blue">{v}</Tag> : <Tag color="default">—</Tag>,
     },
     {
-      title: 'Actions', width: 150,
+      title: 'Actions', width: 200,
       render: (_: any, record: any) => (
         <Space>
+          <Button size="small" icon={<InfoCircleOutlined />} onClick={() => setDetailCluster(record)}>Detail</Button>
           {(hasPermission('kafka_cluster_edit') || record.created_by === user?.id) && (
             <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>Edit</Button>
           )}
@@ -178,6 +181,7 @@ export default function KafkaClusters() {
           autoFocus
         />
       </Modal>
+      <KafkaClusterDetail cluster={detailCluster} onClose={() => setDetailCluster(null)} />
     </div>
   )
 }

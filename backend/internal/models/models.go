@@ -15,6 +15,7 @@ type KafkaCluster struct {
 	Password      string      `json:"password,omitempty" gorm:"column:password"`
 	TLSSkipVerify bool        `json:"tls_skip_verify" gorm:"default:true"`
 	TLSCACert     string      `json:"tls_ca_cert,omitempty" gorm:"type:text"`
+	MetricPort    int         `json:"metric_port" gorm:"default:0"` // Prometheus/JMX exporter port shared by all broker nodes; 0 = not configured
 	CreatedBy     uint        `json:"created_by"`
 	CreatedAt     time.Time   `json:"created_at"`
 	UpdatedAt     time.Time   `json:"updated_at"`
@@ -29,6 +30,25 @@ type KafkaNode struct {
 	Port      int    `json:"port"`
 }
 
+// KafkaReassignmentTask keeps a submitted partition reassignment available for later verification or cancellation.
+type KafkaReassignmentTask struct {
+	ID                     uint      `json:"id" gorm:"primaryKey;autoIncrement"`
+	ClusterID              uint      `json:"cluster_id" gorm:"index;not null"`
+	Topic                  string    `json:"topic" gorm:"index;not null"`
+	Operation              string    `json:"operation" gorm:"index;default:'partition_migration'"`
+	SourceBroker           int32     `json:"source_broker"`
+	TargetBroker           int32     `json:"target_broker"`
+	ThrottleBytesPerSec    int64     `json:"throttle_bytes_per_sec"`
+	PartitionsJSON         string    `json:"partitions_json" gorm:"type:text"`
+	OriginalAssignmentJSON string    `json:"original_assignment_json" gorm:"type:text"`
+	TargetAssignmentJSON   string    `json:"target_assignment_json" gorm:"type:text"`
+	Status                 string    `json:"status" gorm:"index;default:'submitted'"`
+	Message                string    `json:"message" gorm:"type:text"`
+	CreatedBy              uint      `json:"created_by"`
+	CreatedAt              time.Time `json:"created_at"`
+	UpdatedAt              time.Time `json:"updated_at"`
+}
+
 // ESCluster represents an Elasticsearch cluster configuration
 type ESCluster struct {
 	ID          uint      `json:"id" gorm:"primaryKey;autoIncrement"`
@@ -36,7 +56,8 @@ type ESCluster struct {
 	Description string    `json:"description"`
 	Username    string    `json:"username"`
 	Password    string    `json:"password,omitempty" gorm:"column:password"`
-	Scheme      string    `json:"scheme"` // http or https
+	Scheme      string    `json:"scheme"`                       // http or https
+	MetricPort  int       `json:"metric_port" gorm:"default:0"` // Prometheus exporter port shared by all nodes; 0 = not configured
 	CreatedBy   uint      `json:"created_by"`
 	CreatedAt   time.Time `json:"created_at"`
 	UpdatedAt   time.Time `json:"updated_at"`
@@ -61,6 +82,7 @@ type ZKCluster struct {
 	SASLMechanism string    `json:"sasl_mechanism"` // PLAIN | DIGEST-MD5 (only used when AuthScheme=sasl)
 	Username      string    `json:"username"`
 	Password      string    `json:"password,omitempty" gorm:"column:password"`
+	MetricPort    int       `json:"metric_port" gorm:"default:0"` // shared Prometheus/JMX exporter port for all ZK nodes; 0 = not configured
 	CreatedBy     uint      `json:"created_by"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`

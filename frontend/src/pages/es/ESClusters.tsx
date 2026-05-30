@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react'
 import { Table, Button, message, Space, Tag, Modal, Input } from 'antd'
-import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design/icons'
+import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, InfoCircleOutlined } from '@ant-design/icons'
 import { listESClusters, getESCluster, createESCluster, updateESCluster, deleteESCluster } from '../../services/api'
 import ESClusterModal from '../../components/ESClusterModal'
+import ESClusterDetail from './ESClusterDetail'
 import { useResizableColumns, tableComponents } from '../../components/ResizableColumns'
 import { useAuth } from '../../contexts/AuthContext'
 
@@ -13,6 +14,7 @@ export default function ESClusters() {
   const [editing, setEditing] = useState<any>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<{ label: string; onOk: () => void } | null>(null)
   const [deleteInput, setDeleteInput] = useState('')
+  const [detailCluster, setDetailCluster] = useState<any>(null)
   const { hasPermission, user } = useAuth()
 
   const fetchClusters = async () => {
@@ -77,9 +79,10 @@ export default function ESClusters() {
       render: (nodes: any[]) => (nodes || []).map((n: any) => `${n.host}:${n.port}`).join(', '),
     },
     {
-      title: 'Actions', width: 150,
+      title: 'Actions', width: 200,
       render: (_: any, record: any) => (
         <Space>
+          <Button size="small" icon={<InfoCircleOutlined />} onClick={() => setDetailCluster(record)}>Detail</Button>
           {(hasPermission('es_cluster_edit') || record.created_by === user?.id) && (
             <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>Edit</Button>
           )}
@@ -131,6 +134,7 @@ export default function ESClusters() {
           autoFocus
         />
       </Modal>
+      <ESClusterDetail cluster={detailCluster} onClose={() => setDetailCluster(null)} />
     </div>
   )
 }

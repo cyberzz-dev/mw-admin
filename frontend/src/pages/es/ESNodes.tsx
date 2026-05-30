@@ -4,8 +4,8 @@ import ClusterSelector from '../../components/ClusterSelector'
 import { useResizableColumns, tableComponents } from '../../components/ResizableColumns'
 import { listESClusters, listESNodes } from '../../services/api'
 
-export default function ESNodes() {
-  const [clusterId, setClusterId] = useState<number | undefined>()
+export default function ESNodes({ fixedClusterId }: { fixedClusterId?: number } = {}) {
+  const [clusterId, setClusterId] = useState<number | undefined>(fixedClusterId)
   const [nodes, setNodes] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
 
@@ -93,15 +93,17 @@ export default function ESNodes() {
   return (
     <div>
       <div className="page-header">
-        <Space>
-          <h2 style={{ margin: 0 }}>Nodes</h2>
-          <ClusterSelector
-            value={clusterId}
-            onChange={setClusterId}
-            fetchClusters={listESClusters}
-            placeholder="Select ES cluster"
-          />
-        </Space>
+        {!fixedClusterId && (
+          <Space>
+            <h2 style={{ margin: 0 }}>Nodes</h2>
+            <ClusterSelector
+              value={clusterId}
+              onChange={setClusterId}
+              fetchClusters={listESClusters}
+              placeholder="Select ES cluster"
+            />
+          </Space>
+        )}
         <Button onClick={fetchNodes} disabled={!clusterId}>Refresh</Button>
       </div>
       <Table rowKey="name" components={tableComponents} columns={columns} dataSource={nodes} loading={loading} tableLayout="fixed" scroll={{ x: 1380 }} />

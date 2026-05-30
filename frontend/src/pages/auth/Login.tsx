@@ -14,7 +14,7 @@ export default function Login() {
     setLoading(true)
     try {
       const res = await loginApi(values.username, values.password)
-      const { token, user } = res.data
+      const { csrf_token, user } = res.data
       // parse permissions from JSON string to array
       let permissions: string[] = []
       if (user.permissions) {
@@ -24,7 +24,7 @@ export default function Login() {
       if (user.component_access) {
         try { component_access = JSON.parse(user.component_access) } catch { component_access = [] }
       }
-      login(token, { ...user, permissions, component_access })
+      login({ ...user, permissions, component_access }, csrf_token)
       navigate('/', { replace: true })
     } catch (e: any) {
       message.error(e.response?.data?.error || 'Login failed')
@@ -42,37 +42,24 @@ export default function Login() {
       justifyContent: 'center',
       background: '#f2f3f3',
     }}>
-      {/* Header bar */}
-      <div style={{
-        position: 'fixed',
-        top: 0,
-        left: 0,
-        right: 0,
-        height: 48,
-        background: '#232f3e',
-        display: 'flex',
-        alignItems: 'center',
-        padding: '0 20px',
-        gap: 12,
-      }}>
-        <div style={{ width: 4, height: 28, background: '#ff9900', borderRadius: 2 }} />
-        <span style={{ color: '#fff', fontSize: 16, fontWeight: 700 }}>Middleware Console</span>
+      <div style={{ marginBottom: 24, textAlign: 'center' }}>
       </div>
 
       <Card
-        style={{ width: 360, marginTop: 48, border: '1px solid #d5d9d9', borderRadius: 4 }}
+        style={{ width: 360, border: '1px solid #d5d9d9', borderRadius: 4 }}
         bodyStyle={{ padding: '32px 32px 24px' }}
       >
         <div style={{ textAlign: 'center', marginBottom: 28 }}>
+          <div style={{ fontSize: 20, fontWeight: 700, color: '#16191f', marginBottom: 8 }}>Middleware Admin Console</div>
           <div style={{ fontSize: 20, fontWeight: 600, color: '#16191f' }}>Sign in</div>
           <div style={{ fontSize: 13, color: '#687078', marginTop: 4 }}>Enter your credentials to sign in</div>
         </div>
         <Form layout="vertical" onFinish={handleSubmit} autoComplete="off">
           <Form.Item name="username" label="Username" rules={[{ required: true, message: 'Enter your username' }]}>
-            <Input prefix={<UserOutlined />} placeholder="Username" size="large" />
+            <Input prefix={<UserOutlined />} placeholder="Username" size="large" style={{ background: '#fff' }} />
           </Form.Item>
           <Form.Item name="password" label="Password" rules={[{ required: true, message: 'Enter your password' }]}>
-            <Input.Password prefix={<LockOutlined />} placeholder="Password" size="large" />
+            <Input.Password prefix={<LockOutlined />} placeholder="Password" size="large" style={{ background: '#fff' }} />
           </Form.Item>
           <Form.Item style={{ marginTop: 8, marginBottom: 0 }}>
             <Button type="primary" htmlType="submit" loading={loading} block size="large">

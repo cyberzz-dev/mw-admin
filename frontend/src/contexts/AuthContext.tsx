@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useState, useCallback } from 'react'
+import React, { createContext, useContext, useState, useCallback, useEffect } from 'react'
+import { getMe, logoutApi, setCSRFToken } from '../services/api'
 
 export interface CurrentUser {
   id: number
@@ -11,9 +12,9 @@ export interface CurrentUser {
 
 interface AuthContextValue {
   user: CurrentUser | null
-  token: string | null
-  login: (token: string, user: CurrentUser) => void
-  logout: () => void
+  loading: boolean
+  login: (user: CurrentUser, csrfToken: string) => void
+  logout: () => Promise<void>
   hasPermission: (perm: string) => boolean
   hasComponent: (component: string) => boolean
   isAdmin: boolean
@@ -22,9 +23,9 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue>({
   user: null,
-  token: null,
+  loading: true,
   login: () => {},
-  logout: () => {},
+  logout: async () => {},
   hasPermission: () => false,
   hasComponent: () => true,
   isAdmin: false,
@@ -32,27 +33,34 @@ const AuthContext = createContext<AuthContextValue>({
 })
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [token, setToken] = useState<string | null>(() => localStorage.getItem('mw_token'))
-  const [user, setUser] = useState<CurrentUser | null>(() => {
-    const u = localStorage.getItem('mw_user')
-    if (u) {
-      try { return JSON.parse(u) } catch { return null }
-    }
-    return null
-  })
+  const [user, setUser] = useState<CurrentUser | null>(null)
+  const [loading, setLoading] = useState(true)
 
-  const login = useCallback((tk: string, u: CurrentUser) => {
-    setToken(tk)
-    setUser(u)
-    localStorage.setItem('mw_token', tk)
-    localStorage.setItem('mw_user', JSON.stringify(u))
+  // On mount, restore session from the server (session cookie is sent automatically).
+  useEffect(() => {
+    getMe()
+      .then(res => {
+        const d = res.data
+        let permissions: string[] = []
+        try { permissions = JSON.parse(d.permissions || '[]') } catch { permissions = [] }
+        let component_access: string[] = []
+        try { component_access = JSON.parse(d.component_access || '[]') } catch { component_access = [] }
+        setCSRFToken(d.csrf_token || '')
+        setUser({ ...d, permissions, component_access })
+      })
+      .catch(() => setUser(null))
+      .finally(() => setLoading(false))
   }, [])
 
-  const logout = useCallback(() => {
-    setToken(null)
+  const login = useCallback((u: CurrentUser, csrfToken: string) => {
+    setCSRFToken(csrfToken)
+    setUser(u)
+  }, [])
+
+  const logout = useCallback(async () => {
+    try { await logoutApi() } catch { /* ignore */ }
+    setCSRFToken('')
     setUser(null)
-    localStorage.removeItem('mw_token')
-    localStorage.removeItem('mw_user')
   }, [])
 
   const isAdmin = user?.role === 'admin'
@@ -64,9 +72,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return (user.permissions || []).includes(perm)
   }, [user])
 
-  /** Returns true when the current user is allowed to access the given component module.
-   *  Admin always returns true. For regular users, an empty component_access means all
-   *  components are allowed; otherwise only listed components are accessible. */
   const hasComponent = useCallback((component: string): boolean => {
     if (!user) return false
     if (user.role === 'admin') return true
@@ -76,7 +81,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [user])
 
   return (
-    <AuthContext.Provider value={{ user, token, login, logout, hasPermission, hasComponent, isAdmin, isOwnScopeUser }}>
+    <AuthContext.Provider value={{ user, loading, login, logout, hasPermission, hasComponent, isAdmin, isOwnScopeUser }}>
       {children}
     </AuthContext.Provider>
   )
@@ -85,3 +90,4 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 export function useAuth() {
   return useContext(AuthContext)
 }
+

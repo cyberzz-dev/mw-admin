@@ -13,10 +13,12 @@ import KafkaClusters from './pages/kafka/KafkaClusters'
 import KafkaTopics from './pages/kafka/KafkaTopics'
 import KafkaConsumerGroups from './pages/kafka/KafkaConsumerGroups'
 import KafkaClusterConfig from './pages/kafka/KafkaClusterConfig'
+import KafkaNodes from './pages/kafka/KafkaNodes'
 import ESClusters from './pages/es/ESClusters'
 import ESIndices from './pages/es/ESIndices'
 import ESNodes from './pages/es/ESNodes'
 import ESTemplates from './pages/es/ESTemplates'
+import ESComponentTemplates from './pages/es/ESComponentTemplates'
 import ESILMPolicies from './pages/es/ESILMPolicies'
 import ESDevConsole from './pages/es/ESDevConsole'
 import ZKClusters from './pages/zk/ZKClusters'
@@ -32,11 +34,13 @@ const breadcrumbMap: Record<string, string[]> = {
   '/kafka/topics':          ['Kafka', 'Topics'],
   '/kafka/consumer-groups': ['Kafka', 'Consumer Groups'],
   '/kafka/config':          ['Kafka', 'Cluster Configuration'],
+  '/kafka/nodes':           ['Kafka', 'Nodes'],
   '/es/clusters':           ['Elasticsearch', 'Clusters'],
   '/es/indices':            ['Elasticsearch', 'Indices'],
   '/es/nodes':              ['Elasticsearch', 'Nodes'],
-  '/es/templates':          ['Elasticsearch', 'Index Templates'],
-  '/es/ilm':                ['Elasticsearch', 'ILM Policies'],
+  '/es/templates':            ['Elasticsearch', 'Index Templates'],
+  '/es/component-templates':  ['Elasticsearch', 'Component Templates'],
+  '/es/ilm':                  ['Elasticsearch', 'ILM Policies'],
   '/es/console':            ['Elasticsearch', 'Dev Console'],
   '/zk/clusters':           ['ZooKeeper', 'Clusters'],
   '/zk/nodes':              ['ZooKeeper', 'ZNode Browser'],
@@ -44,8 +48,9 @@ const breadcrumbMap: Record<string, string[]> = {
 }
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
-  const { token } = useAuth()
-  if (!token) return <Navigate to="/login" replace />
+  const { user, loading } = useAuth()
+  if (loading) return null
+  if (!user) return <Navigate to="/login" replace />
   return <>{children}</>
 }
 
@@ -82,6 +87,7 @@ function SideNav({ collapsed }: { collapsed: boolean }) {
         { path: '/kafka/topics', label: 'Topics' },
         { path: '/kafka/consumer-groups', label: 'Consumer Groups' },
         { path: '/kafka/config', label: 'Cluster Configuration' },
+        { path: '/kafka/nodes', label: 'Nodes' },
       ],
     },
     {
@@ -92,6 +98,7 @@ function SideNav({ collapsed }: { collapsed: boolean }) {
         { path: '/es/nodes', label: 'Nodes' },
         { path: '/es/indices', label: 'Indices' },
         { path: '/es/templates', label: 'Index Templates' },
+        { path: '/es/component-templates', label: 'Component Templates' },
         { path: '/es/ilm', label: 'ILM Policies' },
         { path: '/es/console', label: 'Dev Console' },
       ],
@@ -231,7 +238,7 @@ function AppLayout() {
       { key: 'logout', icon: <LogoutOutlined />, label: 'Sign out', danger: true },
     ],
     onClick: ({ key }: { key: string }) => {
-      if (key === 'logout') { logout(); navigate('/login') }
+      if (key === 'logout') { logout().then(() => navigate('/login')) }
     },
   }
 
@@ -349,10 +356,12 @@ function AppLayout() {
                 <Route path="/kafka/topics" element={<KafkaTopics />} />
                 <Route path="/kafka/consumer-groups" element={<KafkaConsumerGroups />} />
                 <Route path="/kafka/config" element={<KafkaClusterConfig />} />
+                <Route path="/kafka/nodes" element={<KafkaNodes />} />
                 <Route path="/es/clusters" element={<ESClusters />} />
                 <Route path="/es/indices" element={<ESIndices />} />
                 <Route path="/es/nodes" element={<ESNodes />} />
                 <Route path="/es/templates" element={<ESTemplates />} />
+                <Route path="/es/component-templates" element={<ESComponentTemplates />} />
                 <Route path="/es/ilm" element={<ESILMPolicies />} />
                 <Route path="/es/console" element={<ESDevConsole />} />
                 <Route path="/zk/clusters" element={<ZKClusters />} />

@@ -138,8 +138,8 @@ function prettyJSON(raw: any): string {
   }
 }
 
-export default function ESDevConsole() {
-  const [clusterId, setClusterId] = useState<number | undefined>()
+export default function ESDevConsole({ fixedClusterId }: { fixedClusterId?: number } = {}) {
+  const [clusterId, setClusterId] = useState<number | undefined>(fixedClusterId)
   const [method, setMethod] = useState('GET')
   const [path, setPath] = useState('/_cluster/health')
   const [requestBody, setRequestBody] = useState('')
@@ -264,12 +264,14 @@ export default function ESDevConsole() {
     <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 120px)', gap: 0 }}>
       {/* Toolbar */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 0', flexShrink: 0, flexWrap: 'wrap' }}>
-        <ClusterSelector
-          value={clusterId}
-          onChange={id => { setClusterId(id); setIndexNames([]) }}
-          fetchClusters={listESClusters}
-          placeholder="Select ES cluster"
-        />
+        {!fixedClusterId && (
+          <ClusterSelector
+            value={clusterId}
+            onChange={id => { setClusterId(id); setIndexNames([]) }}
+            fetchClusters={listESClusters}
+            placeholder="Select ES cluster"
+          />
+        )}
         <Select
           value={method}
           onChange={setMethod}

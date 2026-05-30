@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"encoding/json"
 	"fmt"
+	"log"
 	"mw-admin/internal/db"
 	"mw-admin/internal/models"
 	"mw-admin/internal/services"
@@ -43,6 +45,9 @@ func CreateKafkaCluster(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
+	if err := services.RegisterKafkaCluster(&cluster); err != nil {
+		log.Printf("[consul] register kafka %q: %v", cluster.Name, err)
+	}
 	cluster.Password = ""
 	c.JSON(http.StatusCreated, cluster)
 }
@@ -69,6 +74,8 @@ func UpdateKafkaCluster(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	// Deregister old consul services before nodes are replaced
+	services.DeregisterKafkaCluster(&cluster)
 	// delete existing nodes then recreate
 	db.DB.Where("cluster_id = ?", id).Delete(&models.KafkaNode{})
 	cluster.Name = input.Name
@@ -76,19 +83,50 @@ func UpdateKafkaCluster(c *gin.Context) {
 	cluster.Version = input.Version
 	cluster.AuthType = input.AuthType
 	cluster.Username = input.Username
+	cluster.MetricPort = input.MetricPort
 	if input.Password != "" {
 		cluster.Password = input.Password
 	}
 	cluster.Nodes = input.Nodes
 	db.DB.Save(&cluster)
+	if err := services.RegisterKafkaCluster(&cluster); err != nil {
+		log.Printf("[consul] register kafka %q: %v", cluster.Name, err)
+	}
 	cluster.Password = ""
 	c.JSON(http.StatusOK, cluster)
 }
 
 func DeleteKafkaCluster(c *gin.Context) {
 	id, _ := strconv.Atoi(c.Param("id"))
+	var cluster models.KafkaCluster
+	if err := db.DB.Preload("Nodes").First(&cluster, uint(id)).Error; err == nil {
+		services.DeregisterKafkaCluster(&cluster)
+	}
 	db.DB.Delete(&models.KafkaCluster{}, id)
 	c.JSON(http.StatusOK, gin.H{"message": "deleted"})
+}
+
+// KafkaConsulRegister manually (re-)registers a Kafka cluster in Consul.
+func KafkaConsulRegister(c *gin.Context) {
+	cluster, ok := getKafkaCluster(c)
+	if !ok {
+		return
+	}
+	if err := services.RegisterKafkaCluster(cluster); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"message": "registered"})
+}
+
+// KafkaConsulDeregister manually deregisters a Kafka cluster from Consul.
+func KafkaConsulDeregister(c *gin.Context) {
+	cluster, ok := getKafkaCluster(c)
+	if !ok {
+		return
+	}
+	services.DeregisterKafkaCluster(cluster)
+	c.JSON(http.StatusOK, gin.H{"message": "deregistered"})
 }
 
 // ---- Topic management ----
@@ -210,6 +248,24 @@ func KafkaListBrokers(c *gin.Context) {
 	c.JSON(http.StatusOK, brokers)
 }
 
+func KafkaListBrokerPartitions(c *gin.Context) {
+	cluster, ok := getKafkaCluster(c)
+	if !ok {
+		return
+	}
+	brokerID64, err := strconv.ParseInt(c.Param("brokerID"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid broker id"})
+		return
+	}
+	partitions, err := services.ListBrokerPartitions(cluster, int32(brokerID64))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, partitions)
+}
+
 func KafkaGetTopicAssignment(c *gin.Context) {
 	cluster, ok := getKafkaCluster(c)
 	if !ok {
@@ -230,25 +286,58 @@ func KafkaApplyAssignment(c *gin.Context) {
 		return
 	}
 	topicName := c.Param("topic")
-	var raw map[string][]int32
-	if err := c.ShouldBindJSON(&raw); err != nil {
+	var body json.RawMessage
+	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	assignment := make(map[int32][]int32, len(raw))
-	for k, v := range raw {
-		id, err := strconv.Atoi(k)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "无效的分区ID: " + k})
+
+	var req struct {
+		Assignment          map[string][]int32 `json:"assignment"`
+		ThrottleBytesPerSec int64              `json:"throttle_bytes_per_sec"`
+	}
+	if err := json.Unmarshal(body, &req); err == nil && req.Assignment != nil {
+		assignment, ok := parseAssignment(c, req.Assignment)
+		if !ok {
 			return
 		}
-		assignment[int32(id)] = v
+		userID, _ := c.Get("user_id")
+		task, err := services.SubmitReplicaAssignment(cluster, topicName, assignment, req.ThrottleBytesPerSec, userID.(uint))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, task)
+		return
+	}
+
+	var raw map[string][]int32
+	if err := json.Unmarshal(body, &raw); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	assignment, ok := parseAssignment(c, raw)
+	if !ok {
+		return
 	}
 	if err := services.ApplyAssignment(cluster, topicName, assignment); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "副本调整已提交，Kafka 后台迁移中"})
+	c.JSON(http.StatusOK, gin.H{"message": "Replica adjustment submitted. Kafka is reassigning partitions in the background."})
+}
+
+func parseAssignment(c *gin.Context, raw map[string][]int32) (map[int32][]int32, bool) {
+	assignment := make(map[int32][]int32, len(raw))
+	for k, v := range raw {
+		id, err := strconv.Atoi(k)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid partition ID: " + k})
+			return nil, false
+		}
+		assignment[int32(id)] = v
+	}
+	return assignment, true
 }
 
 func KafkaMigratePartitions(c *gin.Context) {
@@ -258,18 +347,71 @@ func KafkaMigratePartitions(c *gin.Context) {
 	}
 	topicName := c.Param("topic")
 	var req struct {
-		SrcBroker int32 `json:"src_broker"`
-		DstBroker int32 `json:"dst_broker"`
+		SrcBroker           int32   `json:"src_broker"`
+		DstBroker           int32   `json:"dst_broker"`
+		ThrottleBytesPerSec int64   `json:"throttle_bytes_per_sec"`
+		Partitions          []int32 `json:"partitions"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := services.MigratePartitions(cluster, topicName, req.SrcBroker, req.DstBroker); err != nil {
+	userID, _ := c.Get("user_id")
+	task, err := services.SubmitPartitionMigration(cluster, topicName, req.SrcBroker, req.DstBroker, req.Partitions, req.ThrottleBytesPerSec, userID.(uint))
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"message": "分区迁移已提交，Kafka 后台迁移中"})
+	c.JSON(http.StatusOK, task)
+}
+
+func KafkaListReassignmentTasks(c *gin.Context) {
+	cluster, ok := getKafkaCluster(c)
+	if !ok {
+		return
+	}
+	tasks, err := services.ListReassignmentTasks(cluster.ID, c.Query("topic"))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, tasks)
+}
+
+func KafkaVerifyReassignmentTask(c *gin.Context) {
+	cluster, ok := getKafkaCluster(c)
+	if !ok {
+		return
+	}
+	taskID64, err := strconv.ParseUint(c.Param("taskID"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid task id"})
+		return
+	}
+	task, err := services.VerifyReassignmentTask(cluster, uint(taskID64))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, task)
+}
+
+func KafkaCancelReassignmentTask(c *gin.Context) {
+	cluster, ok := getKafkaCluster(c)
+	if !ok {
+		return
+	}
+	taskID64, err := strconv.ParseUint(c.Param("taskID"), 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid task id"})
+		return
+	}
+	task, err := services.CancelReassignmentTask(cluster, uint(taskID64))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, task)
 }
 
 func KafkaUpdateTopicPartitions(c *gin.Context) {

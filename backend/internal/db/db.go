@@ -43,6 +43,7 @@ func Init() {
 	err = DB.AutoMigrate(
 		&models.KafkaCluster{},
 		&models.KafkaNode{},
+		&models.KafkaReassignmentTask{},
 		&models.ESCluster{},
 		&models.ESNode{},
 		&models.ZKCluster{},

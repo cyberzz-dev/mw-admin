@@ -26,8 +26,8 @@ const parseSizeToBytes = (sizeStr: string): number => {
   return num
 }
 
-export default function ESIndices() {
-  const [clusterId, setClusterId] = useState<number | undefined>()
+export default function ESIndices({ fixedClusterId }: { fixedClusterId?: number } = {}) {
+  const [clusterId, setClusterId] = useState<number | undefined>(fixedClusterId)
   const [indices, setIndices] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [search, setSearch] = useState('')
@@ -264,15 +264,17 @@ export default function ESIndices() {
   return (
     <div>
       <div className="page-header">
-        <Space>
-          <h2 style={{ margin: 0 }}>Indices</h2>
-          <ClusterSelector
-            value={clusterId}
-            onChange={setClusterId}
-            fetchClusters={listESClusters}
-            placeholder="Select ES cluster"
-          />
-        </Space>
+        {!fixedClusterId && (
+          <Space>
+            <h2 style={{ margin: 0 }}>Indices</h2>
+            <ClusterSelector
+              value={clusterId}
+              onChange={setClusterId}
+              fetchClusters={listESClusters}
+              placeholder="Select ES cluster"
+            />
+          </Space>
+        )}
         <Space>
           <Switch
             checked={hideSystem}

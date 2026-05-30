@@ -13,6 +13,7 @@ type Config struct {
 	Database DatabaseConfig `yaml:"database"`
 	Auth     AuthConfig     `yaml:"auth"`
 	Redis    RedisConfig    `yaml:"redis"`
+	Consul   ConsulConfig   `yaml:"consul"`
 }
 
 // ServerConfig controls the HTTP server.
@@ -46,11 +47,18 @@ type AuthConfig struct {
 // Redis is not yet used internally but is provided for future integration.
 type RedisConfig struct {
 	Enabled  bool   `yaml:"enabled"`   // default: false
-	Host     string `yaml:"host"`      // default: 127.0.0.1
-	Port     int    `yaml:"port"`      // default: 6379
+	Addr     string `yaml:"addr"`      // default: 127.0.0.1:6379
 	Password string `yaml:"password"`  // default: ""
 	DB       int    `yaml:"db"`        // default: 0
 	PoolSize int    `yaml:"pool_size"` // default: 10
+}
+
+// ConsulConfig holds Consul agent connection settings for service registration.
+type ConsulConfig struct {
+	Enabled bool   `yaml:"enabled"` // default: false
+	Addr    string `yaml:"addr"`    // default: 127.0.0.1:8500  (http://host:port also accepted)
+	Token   string `yaml:"token"`   // ACL token; leave empty if ACLs are disabled
+	DC      string `yaml:"dc"`      // datacenter override; leave empty to use agent default
 }
 
 // Global is the application-wide configuration instance, populated by Load.
@@ -104,10 +112,13 @@ func defaultConfig() *Config {
 		},
 		Redis: RedisConfig{
 			Enabled:  false,
-			Host:     "127.0.0.1",
-			Port:     6379,
+			Addr:     "127.0.0.1:6379",
 			DB:       0,
 			PoolSize: 10,
+		},
+		Consul: ConsulConfig{
+			Enabled: false,
+			Addr:    "127.0.0.1:8500",
 		},
 	}
 }

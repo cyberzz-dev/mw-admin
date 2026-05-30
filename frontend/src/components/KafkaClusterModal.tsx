@@ -28,7 +28,7 @@ export default function KafkaClusterModal({ open, initialValues, onCancel, onSub
           tls_skip_verify: initialValues.tls_skip_verify !== false,
         })
       } else {
-        form.setFieldsValue({ auth_type: 'PLAINTEXT', nodes: [{ host: '', port: 9092 }], tls_skip_verify: true })
+        form.setFieldsValue({ auth_type: 'PLAINTEXT', nodes: [{ host: '', port: 9092 }], tls_skip_verify: true, metric_port: 9308 })
       }
     }
   }, [open, initialValues])
@@ -95,6 +95,10 @@ export default function KafkaClusterModal({ open, initialValues, onCancel, onSub
               </>
             ) : null
           }
+        </Form.Item>
+
+        <Form.Item name="metric_port" label="Metric Port" extra="Prometheus kafka_exporter port (same for all broker nodes). Default: 9308.">
+          <InputNumber min={0} max={65535} style={{ width: 140 }} placeholder="9308" />
         </Form.Item>
 
         <Form.List name="nodes">

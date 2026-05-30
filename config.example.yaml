@@ -5,6 +5,18 @@
 # always override file values.
 
 # ──────────────────────────────────────────────
+# Consul service registration
+# When enabled, every cluster create/update/delete automatically
+# registers/deregisters services in the local Consul agent.
+# Both the cluster port and the metric port (if configured) are registered.
+# ──────────────────────────────────────────────
+consul:
+  enabled: false                # set true to enable auto-registration
+  addr: "127.0.0.1:8500"       # Consul agent address (http://host:port also accepted)
+  token: ""                     # ACL token; leave empty if ACLs are disabled
+  dc: ""                        # datacenter override; empty = agent default
+
+# ──────────────────────────────────────────────
 # HTTP server
 # ──────────────────────────────────────────────
 server:
@@ -49,8 +61,7 @@ auth:
 # ──────────────────────────────────────────────
 redis:
   enabled:  false       # set to true to activate
-  host:     127.0.0.1
-  port:     6379
+  addr:     127.0.0.1:6379
   password: ""          # leave empty if no auth required
   db:       0           # Redis database index (0-15)
   pool_size: 10         # max connections in the pool

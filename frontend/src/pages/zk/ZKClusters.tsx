@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react'
 import { Table, Button, message, Space, Tag, Modal, Input } from 'antd'
-import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined } from '@ant-design/icons'
+import { PlusOutlined, EditOutlined, DeleteOutlined, ReloadOutlined, InfoCircleOutlined } from '@ant-design/icons'
 import { listZKClusters, getZKCluster, createZKCluster, updateZKCluster, deleteZKCluster } from '../../services/api'
 import ZKClusterModal from '../../components/ZKClusterModal'
+import ZKClusterDetail from './ZKClusterDetail'
 import { useResizableColumns, tableComponents } from '../../components/ResizableColumns'
 import { useAuth } from '../../contexts/AuthContext'
 
@@ -13,6 +14,7 @@ export default function ZKClusters() {
   const [editing, setEditing] = useState<any>(null)
   const [deleteConfirm, setDeleteConfirm] = useState<{ label: string; onOk: () => void } | null>(null)
   const [deleteInput, setDeleteInput] = useState('')
+  const [detailCluster, setDetailCluster] = useState<any>(null)
   const { hasPermission, user } = useAuth()
 
   const fetchClusters = async () => {
@@ -83,9 +85,10 @@ export default function ZKClusters() {
     },
     { title: 'Username', dataIndex: 'username', width: 120, sorter: (a: any, b: any) => (a.username || '').localeCompare(b.username || ''), render: (v: string) => v || '-' },
     {
-      title: 'Actions', width: 160,
+      title: 'Actions', width: 210,
       render: (_: any, record: any) => (
         <Space>
+          <Button size="small" icon={<InfoCircleOutlined />} onClick={() => setDetailCluster(record)}>Detail</Button>
           {(hasPermission('zk_cluster_edit') || record.created_by === user?.id) && (
             <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(record)}>Edit</Button>
           )}
@@ -135,6 +138,7 @@ export default function ZKClusters() {
           onPressEnter={() => { if (deleteInput === deleteConfirm?.label) { deleteConfirm?.onOk(); setDeleteConfirm(null) } }}
         />
       </Modal>
+      <ZKClusterDetail cluster={detailCluster} onClose={() => setDetailCluster(null)} />
     </div>
   )
 }

@@ -14,7 +14,8 @@ import { useAuth } from '../../contexts/AuthContext'
 import {
   listKafkaClusters, listTopics, getTopicDiskSizes, createTopic, deleteTopic,
   updateTopicPartitions, getTopicAssignment, applyTopicAssignment,
-  listKafkaBrokers, getTopicDetail, fetchTopicMessages
+  listKafkaBrokers, getTopicDetail, fetchTopicMessages,
+  migrateTopicPartitions, listKafkaReassignmentTasks, verifyKafkaReassignmentTask, cancelKafkaReassignmentTask
 } from '../../services/api'
 
 function formatBytes(bytes: number): string {
@@ -26,9 +27,9 @@ function formatBytes(bytes: number): string {
   return `${bytes} B`
 }
 
-export default function KafkaTopics() {
+export default function KafkaTopics({ fixedClusterId }: { fixedClusterId?: number } = {}) {
   const [searchParams] = useSearchParams()
-  const [clusterId, setClusterId] = useState<number | undefined>()
+  const [clusterId, setClusterId] = useState<number | undefined>(fixedClusterId)
   const [topics, setTopics] = useState<any[]>([])
   const [loading, setLoading] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
@@ -41,6 +42,7 @@ export default function KafkaTopics() {
   const [activeDetailTopic, setActiveDetailTopic] = useState<string | null>(null)
   const [assignJson, setAssignJson] = useState('')
   const [assignLoading, setAssignLoading] = useState(false)
+  const [assignThrottleBytesPerSec, setAssignThrottleBytesPerSec] = useState<number>(10 * 1024 * 1024)
   const [migrateOpen, setMigrateOpen] = useState(false)
   const [brokers, setBrokers] = useState<any[]>([])
   const [brokersLoading, setBrokersLoading] = useState(false)
@@ -49,6 +51,9 @@ export default function KafkaTopics() {
   const [migrateScope, setMigrateScope] = useState<'all' | 'custom'>('all')
   const [migrateSelectedPartitions, setMigrateSelectedPartitions] = useState<string[]>([])
   const [migrateSrcBroker, setMigrateSrcBroker] = useState<number | undefined>()
+  const [migrateTasks, setMigrateTasks] = useState<any[]>([])
+  const [migrateTasksLoading, setMigrateTasksLoading] = useState(false)
+  const [migrateTaskActionId, setMigrateTaskActionId] = useState<number | undefined>()
   const [selectedRowKey, setSelectedRowKey] = useState<string | undefined>()
   const [selectedRowKeys, setSelectedRowKeys] = useState<string[]>([])
   const [batchDeleting, setBatchDeleting] = useState(false)
@@ -77,6 +82,7 @@ export default function KafkaTopics() {
 
   // Init cluster and search from URL params on mount (e.g. navigated from Consumer Groups)
   useEffect(() => {
+    if (fixedClusterId) return
     const c = searchParams.get('cluster')
     const t = searchParams.get('topic')
     if (c) setClusterId(Number(c))
@@ -204,18 +210,24 @@ export default function KafkaTopics() {
     setAssignLoading(true)
     setAssignJson('')
     setBrokers([])
+    setAssignThrottleBytesPerSec(10 * 1024 * 1024)
+    setMigrateTasks([])
+    setMigrateTasksLoading(true)
     try {
-      const [assignRes, brokersRes] = await Promise.all([
+      const [assignRes, brokersRes, tasksRes] = await Promise.all([
         getTopicAssignment(clusterId!, record.name),
         listKafkaBrokers(clusterId!),
+        listKafkaReassignmentTasks(clusterId!, record.name),
       ])
       setAssignJson(JSON.stringify(assignRes.data, null, 2))
       setBrokers(brokersRes.data || [])
+      setMigrateTasks(tasksRes.data || [])
     } catch (e: any) {
       message.error(e.response?.data?.error || 'Failed to fetch replica assignment')
       setReplicaOpen(false)
     } finally {
       setAssignLoading(false)
+      setMigrateTasksLoading(false)
     }
   }
 
@@ -227,13 +239,21 @@ export default function KafkaTopics() {
       message.error('JSON parse error: ' + e.message)
       return
     }
+    if (!assignThrottleBytesPerSec || assignThrottleBytesPerSec <= 0) {
+      message.warning('Please set migration throttle')
+      return
+    }
     try {
-      await applyTopicAssignment(clusterId!, selectedTopic.name, parsed)
-      message.success('Replica adjustment submitted. Kafka is migrating in the background.')
-      setReplicaOpen(false)
+      await applyTopicAssignment(clusterId!, selectedTopic.name, {
+        assignment: parsed,
+        throttle_bytes_per_sec: assignThrottleBytesPerSec,
+      })
+      message.success('Replica adjustment task submitted. Use Verify or Cancel from the task list.')
+      await refreshMigrateTasks()
       fetchTopics()
     } catch (e: any) {
       message.error(e.response?.data?.error || 'Replica adjustment failed')
+      await refreshMigrateTasks()
     }
   }
 
@@ -287,31 +307,50 @@ export default function KafkaTopics() {
   const openMigrateModal = async (record: any) => {
     setSelectedTopic(record)
     migrateForm.resetFields()
+    migrateForm.setFieldsValue({ throttle_bytes_per_sec: 10 * 1024 * 1024 })
     setMigrateScope('all')
     setMigrateSelectedPartitions([])
     setMigrateSrcBroker(undefined)
     setMigrateAssignment({})
+    setMigrateTasks([])
     setBrokersLoading(true)
     setMigrateLoadingAssign(true)
+    setMigrateTasksLoading(true)
     setMigrateOpen(true)
     try {
-      const [brokersRes, assignRes] = await Promise.all([
+      const [brokersRes, assignRes, tasksRes] = await Promise.all([
         listKafkaBrokers(clusterId!),
         getTopicAssignment(clusterId!, record.name),
+        listKafkaReassignmentTasks(clusterId!, record.name),
       ])
       setBrokers(brokersRes.data || [])
       setMigrateAssignment(assignRes.data || {})
+      setMigrateTasks(tasksRes.data || [])
     } catch (e: any) {
       message.error(e.response?.data?.error || 'Failed to initialize migration')
       setMigrateOpen(false)
     } finally {
       setBrokersLoading(false)
       setMigrateLoadingAssign(false)
+      setMigrateTasksLoading(false)
+    }
+  }
+
+  const refreshMigrateTasks = async () => {
+    if (!clusterId || !selectedTopic) return
+    setMigrateTasksLoading(true)
+    try {
+      const res = await listKafkaReassignmentTasks(clusterId, selectedTopic.name)
+      setMigrateTasks(res.data || [])
+    } catch (e: any) {
+      message.error(e.response?.data?.error || 'Failed to fetch migration tasks')
+    } finally {
+      setMigrateTasksLoading(false)
     }
   }
 
   const handleMigratePartitions = async (values: any) => {
-    const { src_broker, dst_broker } = values
+    const { src_broker, dst_broker, throttle_bytes_per_sec } = values
     if (src_broker === dst_broker) {
       message.warning('Source and destination brokers must be different')
       return
@@ -332,18 +371,45 @@ export default function KafkaTopics() {
         return
       }
     }
-    const newAssignment = { ...migrateAssignment }
-    for (const p of partitions) {
-      if (newAssignment[p]) {
-        newAssignment[p] = newAssignment[p].map((id: number) => id === src_broker ? dst_broker : id)
-      }
-    }
     try {
-      await applyTopicAssignment(clusterId!, selectedTopic.name, newAssignment)
-      message.success('Partition migration submitted. Kafka is migrating in the background.')
-      setMigrateOpen(false)
+      await migrateTopicPartitions(clusterId!, selectedTopic.name, {
+        src_broker,
+        dst_broker,
+        throttle_bytes_per_sec,
+        partitions: migrateScope === 'custom' ? partitions.map(p => Number(p)) : undefined,
+      })
+      message.success('Partition migration task submitted. Use Verify or Cancel from the task list.')
+      await refreshMigrateTasks()
     } catch (e: any) {
       message.error(e.response?.data?.error || 'Partition migration failed')
+      await refreshMigrateTasks()
+    }
+  }
+
+  const handleVerifyMigrationTask = async (taskId: number) => {
+    setMigrateTaskActionId(taskId)
+    try {
+      const res = await verifyKafkaReassignmentTask(clusterId!, taskId)
+      message.success(res.data?.message || 'Task verified')
+      await refreshMigrateTasks()
+      if (selectedTopic?.name) forceLoadDetail(selectedTopic.name)
+    } catch (e: any) {
+      message.error(e.response?.data?.error || 'Verify failed')
+    } finally {
+      setMigrateTaskActionId(undefined)
+    }
+  }
+
+  const handleCancelMigrationTask = async (taskId: number) => {
+    setMigrateTaskActionId(taskId)
+    try {
+      const res = await cancelKafkaReassignmentTask(clusterId!, taskId)
+      message.success(res.data?.message || 'Task cancelled')
+      await refreshMigrateTasks()
+    } catch (e: any) {
+      message.error(e.response?.data?.error || 'Cancel failed')
+    } finally {
+      setMigrateTaskActionId(undefined)
     }
   }
 
@@ -486,6 +552,108 @@ export default function KafkaTopics() {
     },
   ]
 
+  const migrationStatusColor = (status: string) => {
+    if (status === 'completed') return 'success'
+    if (status === 'running' || status === 'submitted') return 'processing'
+    if (status === 'cancelled') return 'default'
+    if (status === 'failed') return 'error'
+    return 'default'
+  }
+
+  const migrationOperationLabel = (operation: string) => {
+    if (operation === 'replica_adjustment') return 'Replica Adjustment'
+    return 'Partition Migration'
+  }
+
+  const normalizeTaskMessage = (messageText?: string) => {
+    if (!messageText) return '-'
+    const mappings: Array<[string, string]> = [
+      ['迁移任务已创建，正在提交 Kafka reassignment', 'Partition migration task created; submitting Kafka reassignment'],
+      ['副本调整任务已创建，正在提交 Kafka reassignment', 'Replica adjustment task created; submitting Kafka reassignment'],
+      ['迁移已提交，等待 verify 确认完成', 'Partition migration submitted; waiting for verification'],
+      ['副本调整已提交，等待 verify 确认完成', 'Replica adjustment submitted; waiting for verification'],
+      ['迁移完成，限速配置已清理', 'Reassignment completed; throttle configs cleared'],
+      ['迁移已取消，限速配置已清理', 'Reassignment cancelled; throttle configs cleared'],
+      ['Kafka 已无迁移任务，但当前副本分配未达到目标状态', 'Kafka has no active reassignment, but current replicas do not match the target assignment'],
+      ['设置迁移限速失败', 'Failed to set migration throttle'],
+      ['设置副本调整限速失败', 'Failed to set replica adjustment throttle'],
+      ['提交 Kafka reassignment 失败', 'Failed to submit Kafka reassignment'],
+      ['取消迁移失败', 'Failed to cancel reassignment'],
+      ['迁移完成，但清理限速配置失败', 'Reassignment completed, but failed to clear throttle configs'],
+      ['迁移已取消，但清理限速配置失败', 'Reassignment cancelled, but failed to clear throttle configs'],
+      ['清理限速配置失败', 'failed to clear throttle configs'],
+    ]
+    let normalized = messageText
+    mappings.forEach(([from, to]) => {
+      normalized = normalized.replace(from, to)
+    })
+    normalized = normalized.replace(/(\d+) 个分区仍在迁移中/g, '$1 partition(s) still reassigning')
+    return normalized
+  }
+
+  const migrationTaskColumns = [
+    { title: 'ID', dataIndex: 'id', width: 48 },
+    {
+      title: 'Operation', dataIndex: 'operation', width: 118,
+      render: (v: string) => migrationOperationLabel(v),
+    },
+    {
+      title: 'Brokers', width: 76,
+      render: (_: any, record: any) => record.operation === 'replica_adjustment'
+        ? '-'
+        : `${record.source_broker} → ${record.target_broker}`,
+    },
+    {
+      title: 'Partitions', dataIndex: 'partitions', width: 110,
+      render: (v: number[]) => (v || []).length > 6 ? `${v.slice(0, 6).join(', ')} ... (${v.length})` : (v || []).join(', '),
+    },
+    {
+      title: 'Throttle', dataIndex: 'throttle_bytes_per_sec', width: 86,
+      render: (v: number) => `${formatBytes(v)}/s`,
+    },
+    {
+      title: 'Status', dataIndex: 'status', width: 88,
+      render: (v: string) => <Tag color={migrationStatusColor(v)}>{v}</Tag>,
+    },
+    {
+      title: 'Message', dataIndex: 'message', width: 150, ellipsis: true,
+      render: (v: string) => <Tooltip title={normalizeTaskMessage(v)}>{normalizeTaskMessage(v)}</Tooltip>,
+    },
+    {
+      title: 'Actions', width: 120,
+      render: (_: any, record: any) => {
+        const done = ['completed', 'cancelled'].includes(record.status)
+        return (
+          <Space size={4}>
+            <Button
+              size="small"
+              onClick={() => handleVerifyMigrationTask(record.id)}
+              loading={migrateTaskActionId === record.id}
+              disabled={record.status === 'cancelled'}
+            >
+              Verify
+            </Button>
+            <Button
+              size="small"
+              danger
+              disabled={done}
+              loading={migrateTaskActionId === record.id}
+              onClick={() => Modal.confirm({
+                title: `Cancel migration task #${record.id}?`,
+                content: 'Kafka will stop the ongoing partition reassignment for the recorded partitions and keep the task history.',
+                okText: 'Cancel Task',
+                okButtonProps: { danger: true },
+                onOk: () => handleCancelMigrationTask(record.id),
+              })}
+            >
+              Cancel
+            </Button>
+          </Space>
+        )
+      },
+    },
+  ]
+
   const totalPartitions = topics.reduce((sum, t) => sum + (t.partitions || 0) * (t.replicas || 1), 0)
   const totalLeaderPartitions = topics.reduce((sum, t) => sum + (t.leader_partitions || 0), 0)
   const filteredTopics = search
@@ -531,13 +699,17 @@ export default function KafkaTopics() {
   return (
     <div>
       <div className="page-header" style={{ justifyContent: 'flex-start', gap: 16 }}>
-        <h2 style={{ margin: 0, whiteSpace: 'nowrap' }}>Topics</h2>
-        <ClusterSelector
-          value={clusterId}
-          onChange={(id) => { setSearch(''); setClusterId(id) }}
-          fetchClusters={listKafkaClusters}
-          placeholder="Select Kafka cluster"
-        />
+        {!fixedClusterId && (
+          <>
+            <h2 style={{ margin: 0, whiteSpace: 'nowrap' }}>Topics</h2>
+            <ClusterSelector
+              value={clusterId}
+              onChange={(id) => { setSearch(''); setClusterId(id) }}
+              fetchClusters={listKafkaClusters}
+              placeholder="Select Kafka cluster"
+            />
+          </>
+        )}
         <Space style={{ flex: 1, justifyContent: 'flex-end', flexWrap: 'nowrap' }}>
           {(hasPermission('kafka_topic_delete') || isOwnScopeUser) && selectedRowKeys.length > 0 && (
             <Button danger icon={<DeleteOutlined />} loading={batchDeleting} onClick={() => { setBatchDeleteInput(''); setBatchDeleteOpen(true) }}>
@@ -593,7 +765,7 @@ export default function KafkaTopics() {
         dataSource={filteredTopics}
         locale={{ emptyText: (
           <div style={{ padding: '40px 0', color: '#87909a', fontSize: 14, textAlign: 'center' }}>
-            {!clusterId ? '请选择集群以查看 Topics' : '暂无数据'}
+            {!clusterId ? 'Select a cluster to view topics' : 'No data'}
           </div>
         ) }}
         loading={loading}
@@ -710,7 +882,7 @@ export default function KafkaTopics() {
         onCancel={() => setReplicaOpen(false)}
         onOk={handleApplyAssignment}
         okText="Submit"
-        width={560}
+        width={860}
         destroyOnClose
       >
         {assignLoading ? (
@@ -725,6 +897,18 @@ export default function KafkaTopics() {
               <Button size="small" onClick={handleDecreaseReplicas}>− Decrease Replicas</Button>
               <Button size="small" onClick={handleIncreaseReplicas} disabled={brokers.length === 0}>+ Increase Replicas</Button>
             </div>
+            <div style={{ marginBottom: 12 }}>
+              <Typography.Text style={{ display: 'block', marginBottom: 4 }}>Migration Throttle</Typography.Text>
+              <InputNumber
+                min={1}
+                value={assignThrottleBytesPerSec}
+                onChange={value => setAssignThrottleBytesPerSec(Number(value || 0))}
+                addonAfter="bytes/sec"
+                style={{ width: '100%' }}
+                formatter={value => `${value}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                parser={value => Number((value || '').replace(/,/g, '')) as any}
+              />
+            </div>
             <Input.TextArea
               value={assignJson}
               onChange={e => setAssignJson(e.target.value)}
@@ -732,7 +916,23 @@ export default function KafkaTopics() {
               style={{ fontFamily: 'monospace', fontSize: 13 }}
             />
             <div style={{ marginTop: 8, color: '#888', fontSize: 12 }}>
-              Format: {'{"'}partition ID{'": ['}replica broker IDs{', ...]}'}. First broker ID is the preferred leader. Kafka migrates data asynchronously after submission.
+              Format: {'{"'}partition ID{'": ['}replica broker IDs{', ...]}'}. First broker ID is the preferred leader. Kafka migrates data asynchronously after submission; the task is retained for verify or cancel.
+            </div>
+            <div style={{ marginTop: 16, borderTop: '1px solid #f0f0f0', paddingTop: 12 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+                <Typography.Text strong>Reassignment Tasks</Typography.Text>
+                <Button size="small" icon={<ReloadOutlined />} onClick={refreshMigrateTasks} loading={migrateTasksLoading}>Refresh</Button>
+              </div>
+              <Table
+                rowKey="id"
+                columns={migrationTaskColumns}
+                dataSource={migrateTasks}
+                loading={migrateTasksLoading}
+                size="small"
+                pagination={{ pageSize: 5, size: 'small' }}
+                tableLayout="fixed"
+                locale={{ emptyText: 'No reassignment tasks yet' }}
+              />
             </div>
           </>
         )}
@@ -745,7 +945,7 @@ export default function KafkaTopics() {
         onCancel={() => { setMigrateOpen(false); migrateForm.resetFields(); setMigrateScope('all'); setMigrateSelectedPartitions([]) }}
         onOk={() => migrateForm.submit()}
         okText="Submit Migration"
-        width={520}
+        width={860}
         destroyOnClose
       >
         <Spin spinning={brokersLoading || migrateLoadingAssign}>
@@ -770,6 +970,20 @@ export default function KafkaTopics() {
               <Select
                 options={brokers.map((b: any) => ({ value: b.id, label: `Broker ${b.id}  (${b.addr})` }))}
                 placeholder="Select target broker"
+              />
+            </Form.Item>
+            <Form.Item
+              name="throttle_bytes_per_sec"
+              label="Migration Throttle"
+              rules={[{ required: true, message: 'Please set migration throttle' }]}
+              tooltip="Bytes per second per broker for leader/follower replication throttles"
+            >
+              <InputNumber
+                min={1}
+                addonAfter="bytes/sec"
+                style={{ width: '100%' }}
+                formatter={value => `${value}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+                parser={value => Number((value || '').replace(/,/g, '')) as any}
               />
             </Form.Item>
             <Form.Item label="Scope">
@@ -810,7 +1024,23 @@ export default function KafkaTopics() {
             )}
           </Form>
           <div style={{ color: '#888', fontSize: 12 }}>
-            Replaces the source broker in the selected partition replica lists with the target broker. Kafka migrates data asynchronously after submission.
+            Replaces the source broker in the selected partition replica lists with the target broker. The task is retained for later verify or cancel, and verify clears the temporary throttle after completion.
+          </div>
+          <div style={{ marginTop: 16, borderTop: '1px solid #f0f0f0', paddingTop: 12 }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+              <Typography.Text strong>Reassignment Tasks</Typography.Text>
+              <Button size="small" icon={<ReloadOutlined />} onClick={refreshMigrateTasks} loading={migrateTasksLoading}>Refresh</Button>
+            </div>
+            <Table
+              rowKey="id"
+              columns={migrationTaskColumns}
+              dataSource={migrateTasks}
+              loading={migrateTasksLoading}
+              size="small"
+              pagination={{ pageSize: 5, size: 'small' }}
+              tableLayout="fixed"
+              locale={{ emptyText: 'No migration tasks yet' }}
+            />
           </div>
         </Spin>
       </Modal>
@@ -919,6 +1149,7 @@ export default function KafkaTopics() {
                   { title: 'Partition', dataIndex: 'partition', width: 90, sorter: (a: any, b: any) => a.partition - b.partition },
                   { title: 'Offset', dataIndex: 'offset', width: 100, sorter: (a: any, b: any) => a.offset - b.offset },
                   { title: 'Timestamp', dataIndex: 'timestamp', width: 190, sorter: (a: any, b: any) => (a.timestamp || '').localeCompare(b.timestamp || '') },
+                  { title: 'Size', dataIndex: 'size', width: 100, sorter: (a: any, b: any) => (a.size || 0) - (b.size || 0), render: (v: number) => formatBytes(v) },
                   {
                     title: 'Key', dataIndex: 'key', width: 160,
                     render: (v: string) => v
@@ -936,7 +1167,7 @@ export default function KafkaTopics() {
                 ]}
                 dataSource={fetchMessages}
                 pagination={{ pageSize: 20, pageSizeOptions: ['20', '50', '100'], showSizeChanger: true, showTotal: t => `${t} total` }}
-                scroll={{ x: 1100 }}
+                scroll={{ x: 1200 }}
               />
             </>
           )}

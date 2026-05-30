@@ -3,9 +3,14 @@ package services
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"fmt"
+	"mw-admin/internal/db"
 	"mw-admin/internal/models"
+	"net"
 	"sort"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -390,8 +395,14 @@ func AdjustReplication(cluster *models.KafkaCluster, topicName string, newRF int
 
 // BrokerInfo holds basic broker information.
 type BrokerInfo struct {
-	ID   int32  `json:"id"`
-	Addr string `json:"addr"`
+	ID                  int32  `json:"id"`
+	Addr                string `json:"addr"`
+	Host                string `json:"host"`
+	Port                int32  `json:"port"`
+	LeaderCount         int    `json:"leader_count"`
+	PartitionCount      int    `json:"partition_count"`
+	LogSize             int64  `json:"log_size"`
+	AdvertisedListeners string `json:"advertised_listeners"`
 }
 
 // ListClusterBrokers returns all brokers in the cluster sorted by ID.
@@ -407,11 +418,149 @@ func ListClusterBrokers(cluster *models.KafkaCluster) ([]BrokerInfo, error) {
 	defer client.Close()
 
 	brokers := client.Brokers()
-	result := make([]BrokerInfo, len(brokers))
-	for i, b := range brokers {
-		result[i] = BrokerInfo{ID: b.ID(), Addr: b.Addr()}
+	infoMap := make(map[int32]*BrokerInfo, len(brokers))
+	for _, b := range brokers {
+		host, portStr, _ := net.SplitHostPort(b.Addr())
+		portNum, _ := strconv.ParseInt(portStr, 10, 32)
+		infoMap[b.ID()] = &BrokerInfo{
+			ID:   b.ID(),
+			Addr: b.Addr(),
+			Host: host,
+			Port: int32(portNum),
+		}
+	}
+
+	// Build broker IDs slice.
+	brokerIDs := make([]int32, 0, len(brokers))
+	for _, b := range brokers {
+		brokerIDs = append(brokerIDs, b.ID())
+	}
+
+	// Use admin for DescribeLogDirs and DescribeConfig.
+	// IMPORTANT: do NOT call admin.Close() — sarama.NewClusterAdminFromClient shares
+	// the caller's client, and Close() would close it, breaking subsequent client calls.
+	if admin, adminErr := sarama.NewClusterAdminFromClient(client); adminErr == nil {
+		// Populate log sizes.
+		if logDirs, err := admin.DescribeLogDirs(brokerIDs); err == nil {
+			for bID, dirList := range logDirs {
+				var total int64
+				for _, dir := range dirList {
+					for _, t := range dir.Topics {
+						for _, p := range t.Partitions {
+							total += p.Size
+						}
+					}
+				}
+				if info, ok := infoMap[bID]; ok {
+					info.LogSize = total
+				}
+			}
+		}
+		// Populate advertised.listeners from broker config.
+		for bID := range infoMap {
+			entries, err := admin.DescribeConfig(sarama.ConfigResource{
+				Type:        sarama.BrokerResource,
+				Name:        fmt.Sprintf("%d", bID),
+				ConfigNames: []string{"advertised.listeners"},
+			})
+			if err != nil {
+				continue
+			}
+			for _, entry := range entries {
+				if entry.Name == "advertised.listeners" {
+					infoMap[bID].AdvertisedListeners = entry.Value
+					break
+				}
+			}
+		}
+	}
+
+	// Compute per-broker partition counts from topic metadata.
+	if topics, err := client.Topics(); err == nil {
+		for _, topic := range topics {
+			partitions, err := client.Partitions(topic)
+			if err != nil {
+				continue
+			}
+			for _, p := range partitions {
+				if replicas, err := client.Replicas(topic, p); err == nil {
+					for _, rid := range replicas {
+						if info, ok := infoMap[rid]; ok {
+							info.PartitionCount++
+						}
+					}
+				}
+				if leader, err := client.Leader(topic, p); err == nil {
+					if info, ok := infoMap[leader.ID()]; ok {
+						info.LeaderCount++
+					}
+				}
+			}
+		}
+	}
+
+	result := make([]BrokerInfo, 0, len(infoMap))
+	for _, info := range infoMap {
+		result = append(result, *info)
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	return result, nil
+}
+
+// BrokerPartitionInfo describes a single topic-partition stored on a broker.
+type BrokerPartitionInfo struct {
+	Topic       string `json:"topic"`
+	PartitionID int32  `json:"partition_id"`
+	IsLeader    bool   `json:"is_leader"`
+	LogSize     int64  `json:"log_size"`
+}
+
+// ListBrokerPartitions returns all topic-partitions stored on the given broker with their log sizes.
+func ListBrokerPartitions(cluster *models.KafkaCluster, brokerID int32) ([]BrokerPartitionInfo, error) {
+	cfg, err := newSaramaConfig(cluster)
+	if err != nil {
+		return nil, err
+	}
+	client, err := sarama.NewClient(clusterBrokers(cluster), cfg)
+	if err != nil {
+		return nil, fmt.Errorf("connect failed: %w", err)
+	}
+	defer client.Close()
+
+	admin, err := sarama.NewClusterAdminFromClient(client)
+	if err != nil {
+		return nil, err
+	}
+	defer admin.Close()
+
+	logDirs, err := admin.DescribeLogDirs([]int32{brokerID})
+	if err != nil {
+		return nil, fmt.Errorf("describe log dirs: %w", err)
+	}
+
+	var result []BrokerPartitionInfo
+	for _, dirList := range logDirs {
+		for _, dir := range dirList {
+			for _, t := range dir.Topics {
+				for _, p := range t.Partitions {
+					leader, err := client.Leader(t.Topic, p.PartitionID)
+					isLeader := err == nil && leader.ID() == brokerID
+					result = append(result, BrokerPartitionInfo{
+						Topic:       t.Topic,
+						PartitionID: p.PartitionID,
+						IsLeader:    isLeader,
+						LogSize:     p.Size,
+					})
+				}
+			}
+		}
+	}
+	sort.Slice(result, func(i, j int) bool {
+		if result[i].Topic != result[j].Topic {
+			return result[i].Topic < result[j].Topic
+		}
+		return result[i].PartitionID < result[j].PartitionID
+	})
 	return result, nil
 }
 
@@ -471,6 +620,505 @@ func ApplyAssignment(cluster *models.KafkaCluster, topicName string, assignment 
 		saramaAssignment[p] = replicas
 	}
 	return admin.AlterPartitionReassignments(topicName, saramaAssignment)
+}
+
+type ReassignmentTaskView struct {
+	ID                  uint                         `json:"id"`
+	ClusterID           uint                         `json:"cluster_id"`
+	Topic               string                       `json:"topic"`
+	Operation           string                       `json:"operation"`
+	SourceBroker        int32                        `json:"source_broker"`
+	TargetBroker        int32                        `json:"target_broker"`
+	ThrottleBytesPerSec int64                        `json:"throttle_bytes_per_sec"`
+	Partitions          []int32                      `json:"partitions"`
+	OriginalAssignment  map[int32][]int32            `json:"original_assignment"`
+	TargetAssignment    map[int32][]int32            `json:"target_assignment"`
+	Status              string                       `json:"status"`
+	Message             string                       `json:"message"`
+	Ongoing             map[int32]ReassignmentStatus `json:"ongoing,omitempty"`
+	CreatedAt           time.Time                    `json:"created_at"`
+	UpdatedAt           time.Time                    `json:"updated_at"`
+}
+
+type ReassignmentStatus struct {
+	Replicas         []int32 `json:"replicas"`
+	AddingReplicas   []int32 `json:"adding_replicas"`
+	RemovingReplicas []int32 `json:"removing_replicas"`
+}
+
+func reassignmentTaskView(task models.KafkaReassignmentTask) ReassignmentTaskView {
+	var partitions []int32
+	var original map[int32][]int32
+	var target map[int32][]int32
+	_ = json.Unmarshal([]byte(task.PartitionsJSON), &partitions)
+	_ = json.Unmarshal([]byte(task.OriginalAssignmentJSON), &original)
+	_ = json.Unmarshal([]byte(task.TargetAssignmentJSON), &target)
+	return ReassignmentTaskView{
+		ID:                  task.ID,
+		ClusterID:           task.ClusterID,
+		Topic:               task.Topic,
+		Operation:           task.Operation,
+		SourceBroker:        task.SourceBroker,
+		TargetBroker:        task.TargetBroker,
+		ThrottleBytesPerSec: task.ThrottleBytesPerSec,
+		Partitions:          partitions,
+		OriginalAssignment:  original,
+		TargetAssignment:    target,
+		Status:              task.Status,
+		Message:             task.Message,
+		CreatedAt:           task.CreatedAt,
+		UpdatedAt:           task.UpdatedAt,
+	}
+}
+
+func ListReassignmentTasks(clusterID uint, topic string) ([]ReassignmentTaskView, error) {
+	query := db.DB.Where("cluster_id = ?", clusterID).Order("created_at desc")
+	if topic != "" {
+		query = query.Where("topic = ?", topic)
+	}
+	var tasks []models.KafkaReassignmentTask
+	if err := query.Find(&tasks).Error; err != nil {
+		return nil, err
+	}
+	views := make([]ReassignmentTaskView, 0, len(tasks))
+	for _, task := range tasks {
+		views = append(views, reassignmentTaskView(task))
+	}
+	return views, nil
+}
+
+func SubmitPartitionMigration(cluster *models.KafkaCluster, topicName string, srcBroker, dstBroker int32, partitions []int32, throttleBytesPerSec int64, createdBy uint) (*ReassignmentTaskView, error) {
+	if srcBroker == dstBroker {
+		return nil, fmt.Errorf("source and target brokers must be different")
+	}
+	if throttleBytesPerSec <= 0 {
+		return nil, fmt.Errorf("migration throttle must be greater than 0 bytes/sec")
+	}
+	original, err := GetTopicAssignment(cluster, topicName)
+	if err != nil {
+		return nil, err
+	}
+
+	selected := normalizeMigrationPartitions(original, srcBroker, partitions)
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("broker %d is not present in any selected partition replica list for topic %s", srcBroker, topicName)
+	}
+
+	target := copyAssignment(original)
+	for _, p := range selected {
+		replicas := target[p]
+		for i, brokerID := range replicas {
+			if brokerID == srcBroker {
+				replicas[i] = dstBroker
+			}
+		}
+		target[p] = replicas
+	}
+	if err := validateAssignment(target); err != nil {
+		return nil, err
+	}
+
+	partitionsJSON, _ := json.Marshal(selected)
+	originalJSON, _ := json.Marshal(original)
+	targetJSON, _ := json.Marshal(target)
+	task := models.KafkaReassignmentTask{
+		ClusterID:              cluster.ID,
+		Topic:                  topicName,
+		Operation:              "partition_migration",
+		SourceBroker:           srcBroker,
+		TargetBroker:           dstBroker,
+		ThrottleBytesPerSec:    throttleBytesPerSec,
+		PartitionsJSON:         string(partitionsJSON),
+		OriginalAssignmentJSON: string(originalJSON),
+		TargetAssignmentJSON:   string(targetJSON),
+		Status:                 "preparing",
+		Message:                "Partition migration task created; submitting Kafka reassignment",
+		CreatedBy:              createdBy,
+	}
+	if err := db.DB.Create(&task).Error; err != nil {
+		return nil, err
+	}
+
+	if err := setReassignmentThrottle(cluster, topicName, original, target, selected, throttleBytesPerSec); err != nil {
+		setTaskStatus(&task, "failed", "Failed to set migration throttle: "+err.Error())
+		return nil, fmt.Errorf("failed to set migration throttle: %w", err)
+	}
+	if err := ApplyAssignment(cluster, topicName, target); err != nil {
+		_ = clearReassignmentThrottle(cluster, topicName, original, target, selected)
+		setTaskStatus(&task, "failed", "Failed to submit Kafka reassignment: "+err.Error())
+		return nil, err
+	}
+	setTaskStatus(&task, "submitted", "Partition migration submitted; waiting for verification")
+	view := reassignmentTaskView(task)
+	return &view, nil
+}
+
+func SubmitReplicaAssignment(cluster *models.KafkaCluster, topicName string, target map[int32][]int32, throttleBytesPerSec int64, createdBy uint) (*ReassignmentTaskView, error) {
+	if throttleBytesPerSec <= 0 {
+		return nil, fmt.Errorf("replica adjustment throttle must be greater than 0 bytes/sec")
+	}
+	if len(target) == 0 {
+		return nil, fmt.Errorf("assignment cannot be empty")
+	}
+	if err := validateAssignment(target); err != nil {
+		return nil, err
+	}
+	original, err := GetTopicAssignment(cluster, topicName)
+	if err != nil {
+		return nil, err
+	}
+	selected := changedAssignmentPartitions(original, target)
+	if len(selected) == 0 {
+		return nil, fmt.Errorf("replica assignment has no changes")
+	}
+
+	partitionsJSON, _ := json.Marshal(selected)
+	originalJSON, _ := json.Marshal(original)
+	targetJSON, _ := json.Marshal(target)
+	task := models.KafkaReassignmentTask{
+		ClusterID:              cluster.ID,
+		Topic:                  topicName,
+		Operation:              "replica_adjustment",
+		ThrottleBytesPerSec:    throttleBytesPerSec,
+		PartitionsJSON:         string(partitionsJSON),
+		OriginalAssignmentJSON: string(originalJSON),
+		TargetAssignmentJSON:   string(targetJSON),
+		Status:                 "preparing",
+		Message:                "Replica adjustment task created; submitting Kafka reassignment",
+		CreatedBy:              createdBy,
+	}
+	if err := db.DB.Create(&task).Error; err != nil {
+		return nil, err
+	}
+
+	if err := setReassignmentThrottle(cluster, topicName, original, target, selected, throttleBytesPerSec); err != nil {
+		setTaskStatus(&task, "failed", "Failed to set replica adjustment throttle: "+err.Error())
+		return nil, fmt.Errorf("failed to set replica adjustment throttle: %w", err)
+	}
+	if err := ApplyAssignment(cluster, topicName, target); err != nil {
+		_ = clearReassignmentThrottle(cluster, topicName, original, target, selected)
+		setTaskStatus(&task, "failed", "Failed to submit Kafka reassignment: "+err.Error())
+		return nil, err
+	}
+	setTaskStatus(&task, "submitted", "Replica adjustment submitted; waiting for verification")
+	view := reassignmentTaskView(task)
+	return &view, nil
+}
+
+func VerifyReassignmentTask(cluster *models.KafkaCluster, taskID uint) (*ReassignmentTaskView, error) {
+	task, partitions, original, target, err := loadReassignmentTask(cluster.ID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if task.Status == "cancelled" || task.Status == "failed" {
+		view := reassignmentTaskView(task)
+		return &view, nil
+	}
+
+	ongoing, err := listReassignmentStatus(cluster, task.Topic, partitions)
+	if err != nil {
+		setTaskStatus(&task, "failed", err.Error())
+		return nil, err
+	}
+	view := reassignmentTaskView(task)
+	view.Ongoing = ongoing
+	if len(ongoing) > 0 {
+		setTaskStatus(&task, "running", fmt.Sprintf("%d partition(s) still reassigning", len(ongoing)))
+		view = reassignmentTaskView(task)
+		view.Ongoing = ongoing
+		return &view, nil
+	}
+
+	current, err := GetTopicAssignment(cluster, task.Topic)
+	if err != nil {
+		setTaskStatus(&task, "failed", err.Error())
+		return nil, err
+	}
+	if mismatch := assignmentMismatchMessage(current, target, partitions, task.Operation); mismatch != "" {
+		setTaskStatus(&task, "failed", "Kafka has no active reassignment, but current replicas do not match the target assignment: "+mismatch)
+		view = reassignmentTaskView(task)
+		return &view, nil
+	}
+	if err := clearReassignmentThrottle(cluster, task.Topic, original, target, partitions); err != nil {
+		setTaskStatus(&task, "completed", "Reassignment completed, but failed to clear throttle configs: "+err.Error())
+	} else {
+		setTaskStatus(&task, "completed", "Reassignment completed; throttle configs cleared")
+	}
+	view = reassignmentTaskView(task)
+	return &view, nil
+}
+
+func CancelReassignmentTask(cluster *models.KafkaCluster, taskID uint) (*ReassignmentTaskView, error) {
+	task, partitions, original, target, err := loadReassignmentTask(cluster.ID, taskID)
+	if err != nil {
+		return nil, err
+	}
+	if task.Status == "completed" || task.Status == "cancelled" {
+		view := reassignmentTaskView(task)
+		return &view, nil
+	}
+	if err := cancelPartitionReassignments(cluster, task.Topic, partitions); err != nil {
+		setTaskStatus(&task, "failed", "Failed to cancel reassignment: "+err.Error())
+		return nil, err
+	}
+	if err := clearReassignmentThrottle(cluster, task.Topic, original, target, partitions); err != nil {
+		setTaskStatus(&task, "cancelled", "Reassignment cancelled, but failed to clear throttle configs: "+err.Error())
+	} else {
+		setTaskStatus(&task, "cancelled", "Reassignment cancelled; throttle configs cleared")
+	}
+	view := reassignmentTaskView(task)
+	return &view, nil
+}
+
+func normalizeMigrationPartitions(assignment map[int32][]int32, srcBroker int32, requested []int32) []int32 {
+	seen := make(map[int32]bool)
+	selected := make([]int32, 0)
+	if len(requested) == 0 {
+		for p, replicas := range assignment {
+			if containsBroker(replicas, srcBroker) {
+				selected = append(selected, p)
+			}
+		}
+	} else {
+		for _, p := range requested {
+			if seen[p] || !containsBroker(assignment[p], srcBroker) {
+				continue
+			}
+			seen[p] = true
+			selected = append(selected, p)
+		}
+	}
+	sort.Slice(selected, func(i, j int) bool { return selected[i] < selected[j] })
+	return selected
+}
+
+func changedAssignmentPartitions(original, target map[int32][]int32) []int32 {
+	selected := make([]int32, 0)
+	for p, replicas := range target {
+		if !int32SliceEqual(original[p], replicas) {
+			selected = append(selected, p)
+		}
+	}
+	sort.Slice(selected, func(i, j int) bool { return selected[i] < selected[j] })
+	return selected
+}
+
+func copyAssignment(in map[int32][]int32) map[int32][]int32 {
+	out := make(map[int32][]int32, len(in))
+	for p, replicas := range in {
+		out[p] = append([]int32(nil), replicas...)
+	}
+	return out
+}
+
+func containsBroker(replicas []int32, brokerID int32) bool {
+	for _, id := range replicas {
+		if id == brokerID {
+			return true
+		}
+	}
+	return false
+}
+
+func validateAssignment(assignment map[int32][]int32) error {
+	for p, replicas := range assignment {
+		seen := make(map[int32]bool, len(replicas))
+		for _, brokerID := range replicas {
+			if seen[brokerID] {
+				return fmt.Errorf("partition %d replica list contains duplicate broker %d", p, brokerID)
+			}
+			seen[brokerID] = true
+		}
+	}
+	return nil
+}
+
+func loadReassignmentTask(clusterID uint, taskID uint) (models.KafkaReassignmentTask, []int32, map[int32][]int32, map[int32][]int32, error) {
+	var task models.KafkaReassignmentTask
+	if err := db.DB.Where("cluster_id = ? AND id = ?", clusterID, taskID).First(&task).Error; err != nil {
+		return task, nil, nil, nil, err
+	}
+	var partitions []int32
+	var original map[int32][]int32
+	var target map[int32][]int32
+	if err := json.Unmarshal([]byte(task.PartitionsJSON), &partitions); err != nil {
+		return task, nil, nil, nil, err
+	}
+	if err := json.Unmarshal([]byte(task.OriginalAssignmentJSON), &original); err != nil {
+		return task, nil, nil, nil, err
+	}
+	if err := json.Unmarshal([]byte(task.TargetAssignmentJSON), &target); err != nil {
+		return task, nil, nil, nil, err
+	}
+	return task, partitions, original, target, nil
+}
+
+func setTaskStatus(task *models.KafkaReassignmentTask, status string, message string) {
+	task.Status = status
+	task.Message = message
+	_ = db.DB.Model(task).Updates(map[string]interface{}{"status": status, "message": message}).Error
+}
+
+func listReassignmentStatus(cluster *models.KafkaCluster, topic string, partitions []int32) (map[int32]ReassignmentStatus, error) {
+	cfg, err := newSaramaConfig(cluster)
+	if err != nil {
+		return nil, err
+	}
+	admin, err := sarama.NewClusterAdmin(clusterBrokers(cluster), cfg)
+	if err != nil {
+		return nil, err
+	}
+	defer admin.Close()
+	statuses, err := admin.ListPartitionReassignments(topic, partitions)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[int32]ReassignmentStatus)
+	for p, status := range statuses[topic] {
+		result[p] = ReassignmentStatus{Replicas: status.Replicas, AddingReplicas: status.AddingReplicas, RemovingReplicas: status.RemovingReplicas}
+	}
+	return result, nil
+}
+
+func assignmentMismatchMessage(current, target map[int32][]int32, partitions []int32, operation string) string {
+	mismatches := make([]string, 0)
+	for _, p := range partitions {
+		currentReplicas := current[p]
+		targetReplicas := target[p]
+		matched := int32SliceEqual(currentReplicas, targetReplicas)
+		if operation == "replica_adjustment" {
+			matched = int32SetEqual(currentReplicas, targetReplicas)
+		}
+		if !matched {
+			mismatches = append(mismatches, fmt.Sprintf("partition %d current=%v target=%v", p, currentReplicas, targetReplicas))
+		}
+	}
+	if len(mismatches) == 0 {
+		return ""
+	}
+	if len(mismatches) > 3 {
+		return strings.Join(mismatches[:3], "; ") + fmt.Sprintf("; ... and %d more", len(mismatches)-3)
+	}
+	return strings.Join(mismatches, "; ")
+}
+
+func int32SliceEqual(a, b []int32) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func int32SetEqual(a, b []int32) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := make(map[int32]int, len(a))
+	for _, value := range a {
+		counts[value]++
+	}
+	for _, value := range b {
+		counts[value]--
+		if counts[value] < 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func setReassignmentThrottle(cluster *models.KafkaCluster, topic string, original, target map[int32][]int32, partitions []int32, throttleBytesPerSec int64) error {
+	throttledReplicas := buildThrottledReplicas(original, target, partitions)
+	value := strconv.FormatInt(throttleBytesPerSec, 10)
+	return alterReassignmentThrottleConfigs(cluster, topic, throttledReplicas, &value)
+}
+
+func clearReassignmentThrottle(cluster *models.KafkaCluster, topic string, original, target map[int32][]int32, partitions []int32) error {
+	return alterReassignmentThrottleConfigs(cluster, topic, buildThrottledReplicas(original, target, partitions), nil)
+}
+
+func buildThrottledReplicas(original, target map[int32][]int32, partitions []int32) map[int32]bool {
+	brokers := make(map[int32]bool)
+	for _, p := range partitions {
+		for _, brokerID := range original[p] {
+			brokers[brokerID] = true
+		}
+		for _, brokerID := range target[p] {
+			brokers[brokerID] = true
+		}
+	}
+	return brokers
+}
+
+func alterReassignmentThrottleConfigs(cluster *models.KafkaCluster, topic string, brokerIDs map[int32]bool, rate *string) error {
+	cfg, err := newSaramaConfig(cluster)
+	if err != nil {
+		return err
+	}
+	admin, err := sarama.NewClusterAdmin(clusterBrokers(cluster), cfg)
+	if err != nil {
+		return err
+	}
+	defer admin.Close()
+
+	topicEntries := make(map[string]sarama.IncrementalAlterConfigsEntry)
+	if rate != nil {
+		all := "*"
+		topicEntries["leader.replication.throttled.replicas"] = sarama.IncrementalAlterConfigsEntry{Operation: sarama.IncrementalAlterConfigsOperationSet, Value: &all}
+		topicEntries["follower.replication.throttled.replicas"] = sarama.IncrementalAlterConfigsEntry{Operation: sarama.IncrementalAlterConfigsOperationSet, Value: &all}
+	} else {
+		topicEntries["leader.replication.throttled.replicas"] = sarama.IncrementalAlterConfigsEntry{Operation: sarama.IncrementalAlterConfigsOperationDelete}
+		topicEntries["follower.replication.throttled.replicas"] = sarama.IncrementalAlterConfigsEntry{Operation: sarama.IncrementalAlterConfigsOperationDelete}
+	}
+	if err := admin.IncrementalAlterConfig(sarama.TopicResource, topic, topicEntries, false); err != nil {
+		return err
+	}
+	for brokerID := range brokerIDs {
+		entries := make(map[string]sarama.IncrementalAlterConfigsEntry)
+		if rate != nil {
+			entries["leader.replication.throttled.rate"] = sarama.IncrementalAlterConfigsEntry{Operation: sarama.IncrementalAlterConfigsOperationSet, Value: rate}
+			entries["follower.replication.throttled.rate"] = sarama.IncrementalAlterConfigsEntry{Operation: sarama.IncrementalAlterConfigsOperationSet, Value: rate}
+		} else {
+			entries["leader.replication.throttled.rate"] = sarama.IncrementalAlterConfigsEntry{Operation: sarama.IncrementalAlterConfigsOperationDelete}
+			entries["follower.replication.throttled.rate"] = sarama.IncrementalAlterConfigsEntry{Operation: sarama.IncrementalAlterConfigsOperationDelete}
+		}
+		if err := admin.IncrementalAlterConfig(sarama.BrokerResource, strconv.Itoa(int(brokerID)), entries, false); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func cancelPartitionReassignments(cluster *models.KafkaCluster, topic string, partitions []int32) error {
+	cfg, err := newSaramaConfig(cluster)
+	if err != nil {
+		return err
+	}
+	client, err := sarama.NewClient(clusterBrokers(cluster), cfg)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	controller, err := client.Controller()
+	if err != nil {
+		return err
+	}
+	req := &sarama.AlterPartitionReassignmentsRequest{TimeoutMs: int32(60000), Version: int16(0)}
+	for _, p := range partitions {
+		req.AddBlock(topic, p, nil)
+	}
+	resp, err := controller.AlterPartitionReassignments(req)
+	if err != nil {
+		return err
+	}
+	if resp.ErrorCode != sarama.ErrNoError {
+		return resp.ErrorCode
+	}
+	return nil
 }
 
 // MigratePartitions replaces srcBroker with dstBroker in every replica list for the topic.
@@ -1206,6 +1854,7 @@ type KafkaMessage struct {
 	Timestamp string `json:"timestamp"`
 	Key       string `json:"key"`
 	Value     string `json:"value"`
+	Size      int    `json:"size"`
 }
 
 // FetchMessages retrieves up to count messages from topic.
@@ -1348,6 +1997,7 @@ func drainPartition(consumer sarama.Consumer, topic string, partition int32, off
 				Timestamp: msg.Timestamp.Format("2006-01-02 15:04:05.000"),
 				Key:       key,
 				Value:     val,
+				Size:      len(msg.Key) + len(msg.Value),
 			})
 		case <-deadline:
 			return msgs

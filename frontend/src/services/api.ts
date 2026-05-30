@@ -1,23 +1,29 @@
 import axios from 'axios'
 
-const api = axios.create({ baseURL: '/api' })
+// In-memory CSRF token – set after login or session restore.
+// Never stored in localStorage/sessionStorage to avoid XSS exposure.
+let _csrfToken = ''
+export function setCSRFToken(token: string) { _csrfToken = token }
 
-// Attach JWT token to every request
+const api = axios.create({
+  baseURL: '/api',
+  withCredentials: true,   // send session cookie on every request
+})
+
+// Attach CSRF token to state-changing requests
 api.interceptors.request.use(config => {
-  const token = localStorage.getItem('mw_token')
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
+  const method = config.method?.toLowerCase()
+  if (method && ['post', 'put', 'delete', 'patch'].includes(method)) {
+    config.headers['X-CSRF-Token'] = _csrfToken
   }
   return config
 })
 
-// Redirect to /login on 401
+// Redirect to /login on 401 (but not when already there)
 api.interceptors.response.use(
   res => res,
   err => {
-    if (err.response?.status === 401) {
-      localStorage.removeItem('mw_token')
-      localStorage.removeItem('mw_user')
+    if (err.response?.status === 401 && window.location.pathname !== '/login') {
       window.location.href = '/login'
     }
     return Promise.reject(err)
@@ -27,6 +33,7 @@ api.interceptors.response.use(
 // ---- Auth ----
 export const loginApi = (username: string, password: string) =>
   api.post('/auth/login', { username, password })
+export const logoutApi = () => api.post('/auth/logout')
 export const getMe = () => api.get('/auth/me')
 
 // ---- Users ----
@@ -54,12 +61,24 @@ export const updateTopicPartitions = (clusterId: number, topic: string, partitio
 export const updateTopicReplication = (clusterId: number, topic: string, replicas: number) =>
   api.put(`/kafka/clusters/${clusterId}/topics/${topic}/replication`, { replicas })
 export const listKafkaBrokers = (clusterId: number) => api.get(`/kafka/clusters/${clusterId}/brokers`)
+export const listBrokerPartitions = (clusterId: number, brokerId: number) =>
+  api.get(`/kafka/clusters/${clusterId}/brokers/${brokerId}/partitions`)
 export const getTopicAssignment = (clusterId: number, topic: string) =>
   api.get(`/kafka/clusters/${clusterId}/topics/${topic}/assignment`)
-export const applyTopicAssignment = (clusterId: number, topic: string, assignment: any) =>
-  api.put(`/kafka/clusters/${clusterId}/topics/${topic}/assignment`, assignment)
-export const migrateTopicPartitions = (clusterId: number, topic: string, src: number, dst: number) =>
-  api.put(`/kafka/clusters/${clusterId}/topics/${topic}/migrate`, { src_broker: src, dst_broker: dst })
+export const applyTopicAssignment = (clusterId: number, topic: string, data: any) =>
+  api.put(`/kafka/clusters/${clusterId}/topics/${topic}/assignment`, data)
+export const migrateTopicPartitions = (clusterId: number, topic: string, data: {
+  src_broker: number
+  dst_broker: number
+  throttle_bytes_per_sec: number
+  partitions?: number[]
+}) => api.put(`/kafka/clusters/${clusterId}/topics/${topic}/migrate`, data)
+export const listKafkaReassignmentTasks = (clusterId: number, topic?: string) =>
+  api.get(`/kafka/clusters/${clusterId}/reassignment-tasks`, { params: topic ? { topic } : undefined })
+export const verifyKafkaReassignmentTask = (clusterId: number, taskId: number) =>
+  api.post(`/kafka/clusters/${clusterId}/reassignment-tasks/${taskId}/verify`)
+export const cancelKafkaReassignmentTask = (clusterId: number, taskId: number) =>
+  api.post(`/kafka/clusters/${clusterId}/reassignment-tasks/${taskId}/cancel`)
 export const fetchTopicMessages = (clusterId: number, topic: string, params: {
   mode: 'time' | 'offset'
   timestamp_ms?: number
@@ -147,6 +166,15 @@ export const bulkDeleteESTemplates = (clusterId: number, names: string[]) =>
   api.post(`/es/clusters/${clusterId}/templates/bulk-delete`, { names })
 export const putESTemplate = (clusterId: number, name: string, body: any) =>
   api.put(`/es/clusters/${clusterId}/templates/${name}`, body)
+
+// ES Component Template operations
+export const listESComponentTemplates = (clusterId: number) => api.get(`/es/clusters/${clusterId}/component-templates`)
+export const deleteESComponentTemplate = (clusterId: number, name: string) =>
+  api.delete(`/es/clusters/${clusterId}/component-templates`, { params: { name } })
+export const bulkDeleteESComponentTemplates = (clusterId: number, names: string[]) =>
+  api.post(`/es/clusters/${clusterId}/component-templates/bulk-delete`, { names })
+export const putESComponentTemplate = (clusterId: number, name: string, body: any) =>
+  api.put(`/es/clusters/${clusterId}/component-templates/${name}`, body)
 
 // ES ILM operations
 export const deleteESILMPolicy = (clusterId: number, name: string) =>

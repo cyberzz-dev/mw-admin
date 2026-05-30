@@ -132,13 +132,13 @@ function ACLEditModal({ open, acls, version, onCancel, onSave }: {
 }
 
 // ---- Main Component ----
-export default function ZKNodes() {
+export default function ZKNodes({ fixedClusterId }: { fixedClusterId?: number } = {}) {
   const { hasPermission } = useAuth()
   const canEdit = hasPermission('zk_node_edit')
   const canDelete = hasPermission('zk_node_delete')
 
   const [clusters, setClusters] = useState<any[]>([])
-  const [clusterId, setClusterId] = useState<number | null>(null)
+  const [clusterId, setClusterId] = useState<number | null>(fixedClusterId ?? null)
   const [treeData, setTreeData] = useState<ZKTreeNode[]>([])
   const [loadingTree, setLoadingTree] = useState(false)
   const [selectedPath, setSelectedPath] = useState<string | null>(null)
@@ -194,6 +194,7 @@ export default function ZKNodes() {
 
   // Load clusters
   useEffect(() => {
+    if (fixedClusterId) return
     listZKClusters().then(res => {
       const list = res.data || []
       setClusters(list)
@@ -497,15 +498,19 @@ export default function ZKNodes() {
       {/* Header */}
       <div className="page-header">
         <Space>
-          <h2 style={{ margin: 0 }}>ZNode Browser</h2>
-          <Select
-            style={{ width: 220 }}
-            placeholder="Select cluster"
-            value={clusterId ?? undefined}
-            onChange={v => setClusterId(v)}
-          >
-            {clusters.map(c => <Select.Option key={c.id} value={c.id}>{c.name}</Select.Option>)}
-          </Select>
+          {!fixedClusterId && (
+            <>
+              <h2 style={{ margin: 0 }}>ZNode Browser</h2>
+              <Select
+                style={{ width: 220 }}
+                placeholder="Select cluster"
+                value={clusterId ?? undefined}
+                onChange={v => setClusterId(v)}
+              >
+                {clusters.map(c => <Select.Option key={c.id} value={c.id}>{c.name}</Select.Option>)}
+              </Select>
+            </>
+          )}
         </Space>
         <Space>
           {clusterStats && (

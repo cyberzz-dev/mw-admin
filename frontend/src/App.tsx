@@ -14,6 +14,7 @@ import KafkaTopics from './pages/kafka/KafkaTopics'
 import KafkaConsumerGroups from './pages/kafka/KafkaConsumerGroups'
 import KafkaClusterConfig from './pages/kafka/KafkaClusterConfig'
 import KafkaNodes from './pages/kafka/KafkaNodes'
+import KafkaReassignmentTasks from './pages/kafka/KafkaReassignmentTasks'
 import ESClusters from './pages/es/ESClusters'
 import ESIndices from './pages/es/ESIndices'
 import ESNodes from './pages/es/ESNodes'
@@ -35,6 +36,7 @@ const breadcrumbMap: Record<string, string[]> = {
   '/kafka/consumer-groups': ['Kafka', 'Consumer Groups'],
   '/kafka/config':          ['Kafka', 'Cluster Configuration'],
   '/kafka/nodes':           ['Kafka', 'Nodes'],
+  '/kafka/reassignment-tasks': ['Kafka', 'Reassignment Tasks'],
   '/es/clusters':           ['Elasticsearch', 'Clusters'],
   '/es/indices':            ['Elasticsearch', 'Indices'],
   '/es/nodes':              ['Elasticsearch', 'Nodes'],
@@ -88,6 +90,7 @@ function SideNav({ collapsed }: { collapsed: boolean }) {
         { path: '/kafka/consumer-groups', label: 'Consumer Groups' },
         { path: '/kafka/config', label: 'Cluster Configuration' },
         { path: '/kafka/nodes', label: 'Nodes' },
+        { path: '/kafka/reassignment-tasks', label: 'Reassignment Tasks' },
       ],
     },
     {
@@ -357,6 +360,7 @@ function AppLayout() {
                 <Route path="/kafka/consumer-groups" element={<KafkaConsumerGroups />} />
                 <Route path="/kafka/config" element={<KafkaClusterConfig />} />
                 <Route path="/kafka/nodes" element={<KafkaNodes />} />
+                <Route path="/kafka/reassignment-tasks" element={<KafkaReassignmentTasks />} />
                 <Route path="/es/clusters" element={<ESClusters />} />
                 <Route path="/es/indices" element={<ESIndices />} />
                 <Route path="/es/nodes" element={<ESNodes />} />

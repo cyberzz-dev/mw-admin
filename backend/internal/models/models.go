@@ -42,6 +42,7 @@ type KafkaReassignmentTask struct {
 	PartitionsJSON         string    `json:"partitions_json" gorm:"type:text"`
 	OriginalAssignmentJSON string    `json:"original_assignment_json" gorm:"type:text"`
 	TargetAssignmentJSON   string    `json:"target_assignment_json" gorm:"type:text"`
+	FinalAssignmentJSON    string    `json:"final_assignment_json" gorm:"type:text"`
 	Status                 string    `json:"status" gorm:"index;default:'submitted'"`
 	Message                string    `json:"message" gorm:"type:text"`
 	CreatedBy              uint      `json:"created_by"`

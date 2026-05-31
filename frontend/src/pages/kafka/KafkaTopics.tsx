@@ -629,7 +629,7 @@ export default function KafkaTopics({ fixedClusterId }: { fixedClusterId?: numbe
               size="small"
               onClick={() => handleVerifyMigrationTask(record.id)}
               loading={migrateTaskActionId === record.id}
-              disabled={record.status === 'cancelled'}
+              disabled={done}
             >
               Verify
             </Button>

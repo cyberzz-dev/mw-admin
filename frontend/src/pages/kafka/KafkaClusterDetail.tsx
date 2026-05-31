@@ -4,6 +4,7 @@ import KafkaTopics from './KafkaTopics'
 import KafkaConsumerGroups from './KafkaConsumerGroups'
 import KafkaClusterConfig from './KafkaClusterConfig'
 import KafkaNodes from './KafkaNodes'
+import KafkaReassignmentTasks from './KafkaReassignmentTasks'
 
 interface Props {
   cluster: any | null
@@ -26,6 +27,7 @@ export default function KafkaClusterDetail({ cluster, onClose }: Props) {
           { key: 'topics', label: 'Topics', children: <KafkaTopics fixedClusterId={cluster?.id} /> },
           { key: 'consumer-groups', label: 'Consumer Groups', children: <KafkaConsumerGroups fixedClusterId={cluster?.id} /> },
           { key: 'config', label: 'Cluster Config', children: <KafkaClusterConfig fixedClusterId={cluster?.id} /> },
+          { key: 'reassignment-tasks', label: 'Reassignment Tasks', children: <KafkaReassignmentTasks fixedClusterId={cluster?.id} /> },
         ]}
       />
     </Drawer>

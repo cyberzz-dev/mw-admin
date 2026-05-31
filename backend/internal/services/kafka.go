@@ -633,6 +633,7 @@ type ReassignmentTaskView struct {
 	Partitions          []int32                      `json:"partitions"`
 	OriginalAssignment  map[int32][]int32            `json:"original_assignment"`
 	TargetAssignment    map[int32][]int32            `json:"target_assignment"`
+	FinalAssignment     map[int32][]int32            `json:"final_assignment"`
 	Status              string                       `json:"status"`
 	Message             string                       `json:"message"`
 	Ongoing             map[int32]ReassignmentStatus `json:"ongoing,omitempty"`
@@ -650,9 +651,13 @@ func reassignmentTaskView(task models.KafkaReassignmentTask) ReassignmentTaskVie
 	var partitions []int32
 	var original map[int32][]int32
 	var target map[int32][]int32
+	var final map[int32][]int32
 	_ = json.Unmarshal([]byte(task.PartitionsJSON), &partitions)
 	_ = json.Unmarshal([]byte(task.OriginalAssignmentJSON), &original)
 	_ = json.Unmarshal([]byte(task.TargetAssignmentJSON), &target)
+	if task.FinalAssignmentJSON != "" {
+		_ = json.Unmarshal([]byte(task.FinalAssignmentJSON), &final)
+	}
 	return ReassignmentTaskView{
 		ID:                  task.ID,
 		ClusterID:           task.ClusterID,
@@ -664,6 +669,7 @@ func reassignmentTaskView(task models.KafkaReassignmentTask) ReassignmentTaskVie
 		Partitions:          partitions,
 		OriginalAssignment:  original,
 		TargetAssignment:    target,
+		FinalAssignment:     final,
 		Status:              task.Status,
 		Message:             task.Message,
 		CreatedAt:           task.CreatedAt,
@@ -834,6 +840,7 @@ func VerifyReassignmentTask(cluster *models.KafkaCluster, taskID uint) (*Reassig
 		setTaskStatus(&task, "failed", err.Error())
 		return nil, err
 	}
+	setTaskFinalAssignment(&task, current)
 	if mismatch := assignmentMismatchMessage(current, target, partitions, task.Operation); mismatch != "" {
 		setTaskStatus(&task, "failed", "Kafka has no active reassignment, but current replicas do not match the target assignment: "+mismatch)
 		view = reassignmentTaskView(task)
@@ -865,6 +872,9 @@ func CancelReassignmentTask(cluster *models.KafkaCluster, taskID uint) (*Reassig
 		setTaskStatus(&task, "cancelled", "Reassignment cancelled, but failed to clear throttle configs: "+err.Error())
 	} else {
 		setTaskStatus(&task, "cancelled", "Reassignment cancelled; throttle configs cleared")
+	}
+	if current, err := GetTopicAssignment(cluster, task.Topic); err == nil {
+		setTaskFinalAssignment(&task, current)
 	}
 	view := reassignmentTaskView(task)
 	return &view, nil
@@ -957,6 +967,12 @@ func setTaskStatus(task *models.KafkaReassignmentTask, status string, message st
 	task.Status = status
 	task.Message = message
 	_ = db.DB.Model(task).Updates(map[string]interface{}{"status": status, "message": message}).Error
+}
+
+func setTaskFinalAssignment(task *models.KafkaReassignmentTask, assignment map[int32][]int32) {
+	assignmentJSON, _ := json.Marshal(assignment)
+	task.FinalAssignmentJSON = string(assignmentJSON)
+	_ = db.DB.Model(task).Update("final_assignment_json", task.FinalAssignmentJSON).Error
 }
 
 func listReassignmentStatus(cluster *models.KafkaCluster, topic string, partitions []int32) (map[int32]ReassignmentStatus, error) {
